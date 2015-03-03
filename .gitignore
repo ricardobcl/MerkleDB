@@ -1,0 +1,8 @@
+*.beam
+.eunit
+.rebar
+deps/*
+ebin/*
+rel/basic_db
+dev
+apps/basic_db/src/*

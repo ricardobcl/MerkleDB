@@ -1,0 +1,21 @@
+%% -*- erlang -*-
+{application, basic_db,
+ [
+  {description, "DottedDB:  a Distributed Key-Value Store with Global Logical Clocks"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  riak_core
+                 ]},
+  {mod, { basic_db_app, []}},
+  {env, [
+            %% Used LevelDB as the default backend
+            {storage_backend, leveldb},
+
+            %% Enable active anti-entropy by default
+            %% With debugging
+            {anti_entropy, {on, [debug]}}
+        ]}
+ ]}.
