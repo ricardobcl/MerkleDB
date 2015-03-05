@@ -20,6 +20,7 @@
 
 -module(basic_db_entropy_manager).
 -behaviour(gen_server).
+-include_lib("basic_db.hrl").
 
 %% API
 -export([start_link/0,
@@ -56,7 +57,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--type index() :: non_neg_integer().
+% -type index() :: non_neg_integer().
 -type index_n() :: {index(), pos_integer()}.
 -type vnode() :: {index(), node()}.
 -type exchange() :: {index(), index(), index_n()}.
@@ -478,7 +479,8 @@ next_tree(State=#state{tree_queue=Queue}) ->
 -spec schedule_tick() -> ok.
 schedule_tick() ->
     %% Perform tick every 15 seconds
-    DefaultTick = 15000,
+    % DefaultTick = 15000,
+    DefaultTick = ?TICK,
     Tick = app_helper:get_env(basic_db,
                               anti_entropy_tick,
                               DefaultTick),
@@ -493,6 +495,7 @@ maybe_tick(State) ->
             %     disabled ->
             %         NextState = State;
             %     enabled_v1 ->
+            %         NextState = tick(State)
             % end;
             NextState = tick(State);
         false ->
