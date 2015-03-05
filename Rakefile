@@ -16,11 +16,16 @@ end
 desc "counters # of errors lines in the dev cluster log"
 task :errors do
   sh "cat dev/dev?/log/error.log dev/dev?/log/crash.log| wc -l" rescue "print errors error"
+  sh "cat dev/dev1/log/error.log dev/dev1/log/crash.log| wc -l" rescue "print errors error"
+  sh "cat dev/dev2/log/error.log dev/dev2/log/crash.log| wc -l" rescue "print errors error"
+  sh "cat dev/dev3/log/error.log dev/dev3/log/crash.log| wc -l" rescue "print errors error"
+  sh "cat dev/dev4/log/error.log dev/dev4/log/crash.log| wc -l" rescue "print errors error"
 end
 
 desc "attach to a basicDB console"
-task :attach do
-  sh "dev/dev1/bin/basic_db attach" rescue "attach error"
+task :attach, :node do |t, args|
+  args.with_defaults(:node => 1)
+  sh %{dev/dev#{args.node}/bin/basic_db attach} rescue "attach error"
 end
 
 desc "attach to a basicDB console (on dev2)"
@@ -53,9 +58,10 @@ end
 
 desc "start all basic_db nodes"
 task :start do
-  (1..NUM_NODES).each do |n|
-    sh %{dev/dev#{n}/bin/basic_db start}
-  end
+  # (1..NUM_NODES).each do |n|
+  #   sh %{dev/dev#{n}/bin/basic_db start}
+  # end
+  sh "for d in dev/dev*; do $d/bin/basic_db start; done" rescue "not running"
   puts "========================================"
   puts "Dotted Dev Cluster started"
   puts "========================================"
@@ -110,9 +116,9 @@ end
 
 desc "stop all basic_db nodes"
 task :stop do
-  (1..NUM_NODES).each do |n|
-    sh %{dev/dev#{n}/bin/basic_db stop} rescue "not running"
-  end
+  # (1..NUM_NODES).each do |n|
+  sh "for d in dev/dev*; do $d/bin/basic_db stop; done" rescue "not running"
+  # end
   puts "========================================"
   puts "Dotted Dev Cluster stopped"
   puts "========================================"
