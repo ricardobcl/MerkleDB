@@ -237,4 +237,4 @@ stat_tuple(undefined) ->
     undefined;
 stat_tuple(#simple_stat{last=Last, max=Max, min=Min, sum=Sum, count=Cnt}) ->
     Mean = Sum div Cnt,
-    {Last, Min, Max, Mean}.
+    {Last, Min, Max, Mean, Sum}.
