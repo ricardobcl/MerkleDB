@@ -63,7 +63,6 @@
 -type index_n() :: {index(), non_neg_integer()}.
 -type orddict() :: orddict:orddict().
 -type proplist() :: proplists:proplist().
-% -type riak_object_t2b() :: binary().
 -type hashtree() :: hashtree:hashtree().
 
 -record(state, {index,
@@ -322,6 +321,7 @@ handle_call(_Request, _From, State) ->
     {reply, Reply, State}.
 
 handle_cast(poke, State) ->
+    % lager:debug("IH: do poke"),
     State2 = do_poke(State),
     {noreply, State2};
 
@@ -338,10 +338,12 @@ handle_cast({delete, Items}, State) ->
     {noreply, State2};
 
 handle_cast(build_failed, State) ->
+    lager:debug("IH: build failed; requeing poke"),
     basic_db_entropy_manager:requeue_poke(State#state.index),
     State2 = State#state{built=false},
     {noreply, State2};
 handle_cast(build_finished, State) ->
+    lager:debug("IH: build finished"),
     State2 = do_build_finished(State),
     {noreply, State2};
 
@@ -789,26 +791,26 @@ do_compare(Id, Remote, AccFun, Acc, From, State) ->
 
 -spec do_poke(state()) -> state().
 do_poke(State) ->
-    State1 = maybe_rebuild(maybe_expire(State)),
-    State2 = maybe_build(State1),
+    % State1 = maybe_rebuild(maybe_expire(State)),
+    State2 = maybe_build(State),
     State2.
 
--spec maybe_expire(state()) -> state().
-maybe_expire(State=#state{lock=undefined, built=true, expired=false}) ->
-    Diff = timer:now_diff(os:timestamp(), State#state.build_time),
-    Expire = app_helper:get_env(basic_db,
-                                anti_entropy_expire,
-                                ?DEFAULT_EXPIRE),
-    %% Need to convert from millsec to microsec
-    case (Expire =/= never) andalso (Diff > (Expire * 1000)) of
-        true ->
-            lager:debug("Tree expired: ~p", [State#state.index]),
-            State#state{expired=true};
-        false ->
-            State
-    end;
-maybe_expire(State) ->
-    State.
+% -spec maybe_expire(state()) -> state().
+% maybe_expire(State=#state{lock=undefined, built=true, expired=false}) ->
+%     Diff = timer:now_diff(os:timestamp(), State#state.build_time),
+%     Expire = app_helper:get_env(basic_db,
+%                                 anti_entropy_expire,
+%                                 ?DEFAULT_EXPIRE),
+%     %% Need to convert from millsec to microsec
+%     case (Expire =/= never) andalso (Diff > (Expire * 1000)) of
+%         true ->
+%             lager:debug("Tree expired: ~p", [State#state.index]),
+%             State#state{expired=true};
+%         false ->
+%             State
+%     end;
+% maybe_expire(State) ->
+%     State.
 
 -spec clear_tree(state()) -> state().
 clear_tree(State=#state{index=Index}) ->
@@ -831,8 +833,9 @@ maybe_build(State=#state{built=false}) ->
                              build_or_rehash(Self, State)
                      end),
     State#state{built=Pid};
-maybe_build(State) ->
+maybe_build(State=#state{index=_Index}) ->
     %% Already built or build in progress
+    % lager:debug("Already built or build in progress: ~p", [Index]),
     State.
 
 %% If the on-disk data is not marked as previously being built, then trigger
@@ -844,7 +847,9 @@ build_or_rehash(Self, State=#state{index=Index}) ->
                false -> build;
                true  -> rehash
            end,
-    Locked = get_all_locks(Type, Index, self()),
+    _ = get_all_locks(Type, Index, self()),
+    % lager:debug("Not build, starting |~p| (~p) now: ~p", [Type, Locked, Index]),
+    Locked = true,
     build_or_rehash(Self, Locked, Type, State).
 
 build_or_rehash(Self, Locked, Type, #state{index=Index, trees=Trees}) ->
@@ -863,29 +868,29 @@ build_or_rehash(Self, Locked, Type, #state{index=Index, trees=Trees}) ->
             gen_server:cast(Self, build_failed)
     end.
 
--spec maybe_rebuild(state()) -> state().
-maybe_rebuild(State=#state{lock=undefined, built=true, expired=true, index=Index}) ->
-    Self = self(),
-    Pid = spawn_link(fun() ->
-                             receive
-                                 {lock, Locked, State2} ->
-                                     build_or_rehash(Self, Locked, build, State2);
-                                 stop ->
-                                     ok
-                             end
-                     end),
-    Locked = get_all_locks(build, Index, Pid),
-    case Locked of
-        true ->
-            State2 = clear_tree(State),
-            Pid ! {lock, Locked, State2},
-            State2#state{built=Pid};
-        _ ->
-            Pid ! stop,
-            State
-    end;
-maybe_rebuild(State) ->
-    State.
+% -spec maybe_rebuild(state()) -> state().
+% maybe_rebuild(State=#state{lock=undefined, built=true, expired=true, index=Index}) ->
+%     Self = self(),
+%     Pid = spawn_link(fun() ->
+%                              receive
+%                                  {lock, Locked, State2} ->
+%                                      build_or_rehash(Self, Locked, build, State2);
+%                                  stop ->
+%                                      ok
+%                              end
+%                      end),
+%     Locked = get_all_locks(build, Index, Pid),
+%     case Locked of
+%         true ->
+%             State2 = clear_tree(State),
+%             Pid ! {lock, Locked, State2},
+%             State2#state{built=Pid};
+%         _ ->
+%             Pid ! stop,
+%             State
+%     end;
+% maybe_rebuild(State) ->
+%     State.
 
 % %% Check if the trees contain the magic index tree
 % -spec has_index_tree(orddict()) -> boolean().
@@ -911,10 +916,12 @@ get_all_locks(Type, Index, Pid) ->
             case maybe_get_vnode_lock(Type, Index, Pid) of
                 ok ->
                     true;
-                _ ->
+                _Other2 ->
+                    % lager:debug("IH: get_all_lock is not ok (2) : ~p ",[Other2]),
                     false
             end;
-        _ ->
+        _Other ->
+            % lager:debug("IH: get_all_lock is not ok: ~p ",[Other]),
             false
     end.
 
