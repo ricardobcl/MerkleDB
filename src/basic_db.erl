@@ -11,16 +11,18 @@
          new_client/1,
          get/1,
          get/2,
-         get_at_node/2,
-         get_at_node/3,
-         put/2,
+         new/2,
+         new/3,
          put/3,
          put/4,
-         put_at_node/3,
-         put_at_node/4,
-         put_at_node/5,
          delete/2,
          delete/3,
+         get_at_node/2,
+         get_at_node/3,
+         new_at_node/3,
+         new_at_node/4,
+         put_at_node/4,
+         put_at_node/5,
          delete_at_node/3,
          delete_at_node/4,
          test/0,
@@ -78,25 +80,52 @@ new_client(Node) ->
 %%% READING
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-%% @doc Get a value from a key. If no target node is specified, use this node.
-get(Key) ->
+%%%%%%%%%%%%
+%% Normal API
+%%%%%%%%%%%%
+
+%% @doc get/1 Get a value from a key, without options.
+get(Key) when not is_tuple(Key) ->
+    get({?DEFAULT_BUCKET, Key});
+get(BKey={_Bucket, _Key}) ->
     {ok, LocalNode} = new_client(),
-    do_get(?DEFAULT_BUCKET, Key, LocalNode).
+    Options = sanitize_options_get(),
+    do_get(BKey, Options, LocalNode).
 
-get(Bucket, Key) ->
+%% @doc get/2 Get a value from a key, with options.
+get(Key, Options) when not is_tuple(Key) ->
+    get({?DEFAULT_BUCKET, Key}, Options);
+get(BKey={_Bucket, _Key}, Options) ->
     {ok, LocalNode} = new_client(),
-    do_get(Bucket, Key, LocalNode).
+    Options2 = sanitize_options_get(Options),
+    do_get(BKey, Options2, LocalNode).
 
-get_at_node(Key, Client) ->
-    do_get(?DEFAULT_BUCKET, Key, Client).
+%%%%%%%%%%%%
+%% Variation on the API to accept the Target Node
+%%%%%%%%%%%%
 
-get_at_node(Bucket, Key, Client) ->
-    do_get(Bucket, Key, Client).
+%% @doc get_at_node/2 Get a value from a key, without options.
+get_at_node(Key, Client) when not is_tuple(Key) ->
+    get_at_node({?DEFAULT_BUCKET, Key}, Client);
+get_at_node(BKey={_Bucket, _Key}, Client) ->
+    Options = sanitize_options_get(),
+    do_get(BKey, Options, Client).
+
+%% @doc get_at_node/3 Get a value from a key, with options.
+get_at_node(Key, Options, Client) when not is_tuple(Key) ->
+    get_at_node({?DEFAULT_BUCKET, Key}, Options, Client);
+get_at_node(BKey={_Bucket, _Key}, Options, Client) ->
+    Options2 = sanitize_options_get(Options),
+    do_get(BKey, Options2, Client).
 
 
-do_get(Bucket, Key, {?MODULE, TargetNode}) ->
+%% @doc Make the actual request to a GET FSM at the Target Node.
+do_get(BKey, Options, {?MODULE, TargetNode}) ->
     ReqID = basic_db_utils:make_request_id(),
-    Request = [ReqID, self(), {Bucket, Key}],
+    Request = [ ReqID,
+                self(),
+                BKey,
+                Options],
     case node() of
         % if this node is already the target node
         TargetNode ->
@@ -107,47 +136,132 @@ do_get(Bucket, Key, {?MODULE, TargetNode}) ->
     end,
     wait_for_reqid(ReqID, ?DEFAULT_TIMEOUT).
 
+%% @doc Sanitize options of the get request.
+sanitize_options_get() ->
+    sanitize_options_get([]).
+sanitize_options_get(Options) when is_list(Options) ->
+    %% Unfolds all occurrences of atoms in Options to tuples {Atom, true}.
+    Options1 = proplists:unfold(Options),
+    %% Default read repair to true.
+    DoReadRepair = proplists:get_value(read_repair, Options1, true),
+    %% Default number of required replicas keys received to 2.
+    ReplicasResponses = proplists:get_value(replicas, Options1, 2),
+    Options2 = proplists:delete(read_repair, Options1),
+    Options3 = proplists:delete(replicas, Options2),
+    [{read_repair, DoReadRepair}, {replicas,ReplicasResponses}] ++ Options3.
 
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%% UPDATES -> PUTs & DELETEs
+%%% Updates -> NEW, PUT & DELETE
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-%% @doc Writes a Key-Value pair. The causal context is optional.
-put(Key, Value) ->
-    put(Key, Value, vv:new()).
-put(Key, Value, Context) ->
-    put(?DEFAULT_BUCKET, Key, Value, Context).
-put(Bucket, Key, Value, Context) ->
+%%%%%%%%%%%%
+%% Normal API
+%%%%%%%%%%%%
+
+%% @doc new/2 New key/value, without options.
+new(Key, Value) when not is_tuple(Key) ->
+    new({?DEFAULT_BUCKET, Key}, Value);
+new(BKey={_Bucket, _Key}, Value) ->
+    put(BKey, Value, vv:new()).
+
+%% @doc new/3 New key/value, with options.
+new(Key, Value, Options) when not is_tuple(Key) ->
+    new({?DEFAULT_BUCKET, Key}, Value, Options);
+new(BKey={_Bucket, _Key}, Value, Options) ->
+    put(BKey, Value, vv:new(), Options).
+
+%% @doc put/3 Update key/value with context, but no options.
+put(Key, Value, Context) when not is_tuple(Key) ->
+    put({?DEFAULT_BUCKET, Key}, Value, Context);
+put(BKey={_Bucket, _Key}, Value, Context) ->
     {ok, LocalNode} = new_client(),
-    do_mutation([{Bucket, Key}, Value, Context, ?WRITE_OP], LocalNode).
+    Options = sanitize_options_put([?WRITE_OP]),
+    do_put(BKey, Value, Context, Options, LocalNode).
 
-put_at_node(Key, Value, TargetNode) ->
-    put_at_node(Key, Value, vv:new(), TargetNode).
-put_at_node(Key, Value, Context, TargetNode) ->
-    put_at_node(?DEFAULT_BUCKET, Key, Value, Context, TargetNode).
-put_at_node(Bucket, Key, Value, Context, TargetNode) ->
-    do_mutation([{Bucket, Key}, Value, Context, ?WRITE_OP], TargetNode).
-
-delete(Key, Context) ->
-    delete(?DEFAULT_BUCKET, Key, Context).
-delete(Bucket, Key, Context) ->
+%% @doc put/4 Update key/value with context and options.
+put(Key, Value, Context, Options) when not is_tuple(Key) ->
+    put({?DEFAULT_BUCKET, Key}, Value, Context, Options);
+put(BKey={_Bucket, _Key}, Value, Context, Options) ->
     {ok, LocalNode} = new_client(),
-    do_mutation([{Bucket, Key}, undefined, Context, ?DELETE_OP], LocalNode).
+    Options1 = sanitize_options_put([?WRITE_OP | Options]),
+    do_put(BKey, Value, Context, Options1, LocalNode).
 
-delete_at_node(Key, Context, TargetNode) ->
-    delete_at_node(?DEFAULT_BUCKET, Key, Context, TargetNode).
-delete_at_node(Bucket, Key, Context, TargetNode) ->
-    do_mutation([{Bucket, Key}, undefined, Context, ?DELETE_OP], TargetNode).
+%% @doc delete/2 Delete key with context, but no options.
+delete(Key, Context) when not is_tuple(Key) ->
+    delete({?DEFAULT_BUCKET, Key}, Context);
+delete(BKey={_Bucket, _Key}, Context) ->
+    {ok, LocalNode} = new_client(),
+    Options = sanitize_options_put([?DELETE_OP]),
+    do_put(BKey, undefined, Context, Options, LocalNode).
+
+%% @doc delete/3 Delete key with context, with options.
+delete(Key, Context, Options) when not is_tuple(Key) ->
+    delete({?DEFAULT_BUCKET, Key}, Context, Options);
+delete(BKey={_Bucket, _Key}, Context, Options) ->
+    {ok, LocalNode} = new_client(),
+    Options1 = sanitize_options_put([?DELETE_OP | Options]),
+    do_put(BKey, undefined, Context, Options1, LocalNode).
+
+
+%%%%%%%%%%%%
+%% Variation on the API to accept the Target Node
+%%%%%%%%%%%%
+
+%% @doc new_at_node/3 New key/value, without options.
+new_at_node(Key, Value, TargetNode) when not is_tuple(Key) ->
+    new_at_node({?DEFAULT_BUCKET, Key}, Value, TargetNode);
+new_at_node(BKey={_Bucket, _Key}, Value, TargetNode) ->
+    put_at_node(BKey, Value, vv:new(), TargetNode).
+
+%% @doc new_at_node/4 New key/value, with options.
+new_at_node(Key, Value, Options, TargetNode) when not is_tuple(Key) ->
+    new_at_node({?DEFAULT_BUCKET, Key}, Value, Options, TargetNode);
+new_at_node(BKey={_Bucket, _Key}, Value, Options, TargetNode) ->
+    put_at_node(BKey, Value, vv:new(), Options, TargetNode).
+
+
+%% @doc put_at_node/4 Update key/value with context, but no options.
+put_at_node(Key, Value, Context, TargetNode) when not is_tuple(Key) ->
+    put_at_node({?DEFAULT_BUCKET, Key}, Value, Context, TargetNode);
+put_at_node(BKey={_Bucket, _Key}, Value, Context, TargetNode) ->
+    Options = sanitize_options_put([?WRITE_OP]),
+    do_put(BKey, Value, Context, Options, TargetNode).
+
+%% @doc put_at_node/5 Update key/value with context and options.
+put_at_node(Key, Value, Context, Options, TargetNode) when not is_tuple(Key) ->
+    put_at_node({?DEFAULT_BUCKET, Key}, Value, Context, Options, TargetNode);
+put_at_node(BKey={_Bucket, _Key}, Value, Context, Options, TargetNode) ->
+    Options1 = sanitize_options_put([?WRITE_OP | Options]),
+    do_put(BKey, Value, Context, Options1, TargetNode).
+
+
+%% @doc delete_at_node/3 Delete key with context, but no options.
+delete_at_node(Key, Context, TargetNode) when not is_tuple(Key) ->
+    delete_at_node({?DEFAULT_BUCKET, Key}, Context, TargetNode);
+delete_at_node(BKey={_Bucket, _Key}, Context, TargetNode) ->
+    Options = sanitize_options_put([?DELETE_OP]),
+    do_put(BKey, undefined, Context, Options, TargetNode).
+
+%% @doc delete_at_node/4 Delete key with context, with options.
+delete_at_node(Key, Context, Options, TargetNode) when not is_tuple(Key) ->
+    delete_at_node({?DEFAULT_BUCKET, Key}, Context, Options, TargetNode);
+delete_at_node(BKey={_Bucket, _Key}, Context, Options, TargetNode) ->
+    Options1 = sanitize_options_put([?DELETE_OP | Options]),
+    do_put(BKey, undefined, Context, Options1, TargetNode).
 
 
 
-% @doc Writes normal PUTs and DELETEs
-do_mutation([BKey, Value, Context, Operation], {?MODULE, TargetNode}) ->
-    BinValue = basic_db_utils:encode_kv(Value),
+%% @doc Make the actual request to a PUT FSM at the Target Node.
+do_put(BKey, Value, Context, Options, {?MODULE, TargetNode}) ->
     ReqID = basic_db_utils:make_request_id(),
-    Request = [ReqID, self(), Operation, BKey, BinValue, Context],
+    Request = [ ReqID,
+                self(),
+                BKey,
+                basic_db_utils:encode_kv(Value),
+                Context,
+                Options],
     case node() of
         TargetNode ->
             basic_db_put_fsm_sup:start_put_fsm(Request);
@@ -155,6 +269,20 @@ do_mutation([BKey, Value, Context, Operation], {?MODULE, TargetNode}) ->
             proc_lib:spawn_link(TargetNode, basic_db_put_fsm, start_link, Request)
     end,
     wait_for_reqid(ReqID, ?DEFAULT_TIMEOUT).
+
+
+%% @doc Sanitize options of the put/delete request.
+sanitize_options_put(Options) when is_list(Options) ->
+    %% Unfolds all occurrences of atoms in Options to tuples {Atom, true}.
+    Options1 = proplists:unfold(Options),
+    %% Default number of replica nodes contacted to 3
+    ReplicataNodes = proplists:get_value(n_replicate, Options1, 3),
+    %% Default number of acks from replica nodes to 2
+    ReplicasResponses = proplists:get_value(acks, Options1, 2),
+    Options2 = proplists:delete(n_replicate, Options1),
+    Options3 = proplists:delete(acks, Options2),
+    [{n_replicate, ReplicataNodes}, {acks,ReplicasResponses}] ++ Options3.
+
 
 
 
@@ -184,22 +312,6 @@ aae_exchange_status(ExchangeInfo) ->
      end || {Index, LastTS, AllTS, _Repairs} <- ExchangeInfo],
     ok.
 
-aae_repair_status(ExchangeInfo) ->
-    io:format("~s~n", [string:centre(" Keys Repaired ", 79, $=)]),
-    io:format("~-49s  ~s  ~s  ~s~n", ["Index",
-                                      string:centre("Last", 8),
-                                      string:centre("Mean", 8),
-                                      string:centre("Max", 8)]),
-    io:format("~79..-s~n", [""]),
-    _ = [begin
-         io:format("~-49b  ~s  ~s  ~s~n", [Index,
-                                           string:centre(integer_to_list(Last), 8),
-                                           string:centre(integer_to_list(Mean), 8),
-                                           string:centre(integer_to_list(Max), 8)]),
-         ok
-     end || {Index, _, _, {Last,_Min,Max,Mean}} <- ExchangeInfo],
-    ok.
-
 aae_tree_status(TreeInfo) ->
     io:format("~s~n", [string:centre(" Entropy Trees ", 79, $=)]),
     io:format("~-49s  Built (ago)~n", ["Index"]),
@@ -210,6 +322,24 @@ aae_tree_status(TreeInfo) ->
          io:format("~-49b  ~s~n", [Index, BuiltStr]),
          ok
      end || {Index, BuiltTS} <- TreeInfo],
+    ok.
+
+aae_repair_status(ExchangeInfo) ->
+    io:format("~s~n", [string:centre(" Keys Repaired ", 89, $=)]),
+    io:format("~-49s  ~s  ~s  ~s  ~s~n", ["Index",
+                                      string:centre("Last", 8),
+                                      string:centre("Mean", 8),
+                                      string:centre("Max", 8),
+                                      string:centre("Sum", 8)]),
+    io:format("~89..-s~n", [""]),
+    _ = [begin
+         io:format("~-49b  ~s  ~s  ~s  ~s~n", [Index,
+                                           string:centre(integer_to_list(Last), 8),
+                                           string:centre(integer_to_list(Mean), 8),
+                                           string:centre(integer_to_list(Max), 8),
+                                           string:centre(integer_to_list(Sum), 8)]),
+         ok
+     end || {Index, _, _, {Last,_Min,Max,Mean,Sum}} <- ExchangeInfo],
     ok.
 
 format_timestamp(_Now, undefined) ->
@@ -242,11 +372,11 @@ test(N) ->
 test() ->
     {not_found, _} = get("random_key"),
     K1 = basic_db_utils:make_request_id(),
-    ok = put(K1,"v1"),
-    ok = put("KEY2","vb"),
-    ok = put(K1,"v3"),
-    ok = put("KEY3","vc"),
-    ok = put(K1,"v2"),
+    ok = new(K1,"v1"),
+    ok = new("KEY2","vb"),
+    ok = new(K1,"v3"),
+    ok = new("KEY3","vc"),
+    ok = new(K1,"v2"),
     {ok, {Values, Ctx}} = get(K1),
     V123 = lists:sort(Values),
     ["v1","v2","v3"] = V123,
