@@ -9,6 +9,7 @@
 -define(DELETE_OP, delete_op).
 -define(WRITE_OP, write_op).
 -define(DEFAULT_HASHTREE_TOKENS, 90).
+-define(TICK, 2000).
 
 
 -type bucket()      :: term().
