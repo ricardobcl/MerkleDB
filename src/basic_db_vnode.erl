@@ -25,7 +25,7 @@
          write/6,
          replicate/4,
          hashtree_pid/1,
-         rehash/2,
+         rehash/3,
          request_hashtree_pid/1,
          request_hashtree_pid/2
         ]).
@@ -107,16 +107,16 @@ request_hashtree_pid(Partition, Sender) ->
                                    Sender,
                                    ?MASTER).
 
-%% Used by {@link basic_db_exchange_fsm} to force a vnode to update the hashtree
+%% Used by {@link riak_kv_exchange_fsm} to force a vnode to update the hashtree
 %% for repaired keys. Typically, repairing keys will trigger read repair that
 %% will update the AAE hash in the write path. However, if the AAE tree is
 %% divergent from the KV data, it is possible that AAE will try to repair keys
 %% that do not have divergent KV replicas. In that case, read repair is never
 %% triggered. Always rehashing keys after any attempt at repair ensures that
 %% AAE does not try to repair the same non-divergent keys over and over.
-rehash(Preflist, Key) ->
+rehash(Preflist, Bucket, Key) ->
     riak_core_vnode_master:command(Preflist,
-                                   {rehash, Key},
+                                   {rehash, {Bucket, Key}},
                                    ignore,
                                    ?MASTER).
 
@@ -414,7 +414,7 @@ open_storage(Index) ->
         ets         -> {backend, ets};
         _           -> {backend, ets}
     end,
-    lager:info("Using ~p for vnode ~p.",[Backend,Index]),
+    % lager:debug("Using ~p for vnode ~p.",[Backend,Index]),
     % give the name to the backend for this vnode using its position in the ring.
     DBName = filename:join("data/objects/", integer_to_list(Index)),
     {ok, Storage} = basic_db_storage:open(DBName, [Backend]),
