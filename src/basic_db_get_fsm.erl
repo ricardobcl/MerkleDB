@@ -6,7 +6,7 @@
 -include("basic_db.hrl").
 
 %% API
--export([start_link/3]).
+-export([start_link/4]).
 
 %% Callbacks
 -export([init/1, code_change/4, handle_event/3, handle_info/3,
@@ -16,13 +16,21 @@
 -export([execute/2, waiting/2]).
 
 -record(state, {
+    %% Unique request ID.
     req_id      :: pos_integer(),
+    %% Pid from the caller process.
     from        :: pid(),
+    %% The key to read.
     key         :: bkey(),
+    %% The replica nodes for the key.
     replicas    :: riak_core_apl:preflist2(),
-    acks        :: non_neg_integer(),
-    good_acks   :: non_neg_integer(),
-    reply       :: dvv:clock(),
+    %% Minimal number of acks from replica nodes.
+    min_acks    :: non_neg_integer(),
+    %% Do read repair on outdated replica nodes.
+    do_rr       :: boolean(),
+    %% The current DVV to return.
+    replies     :: [{index_node(), dvv:clock()}],
+    %% The timeout value for this request.
     timeout     :: non_neg_integer()
 }).
 
@@ -30,31 +38,28 @@
 %%% API
 %%%===================================================================
 
-start_link(ReqID, From, BKey) ->
-    gen_fsm:start_link(?MODULE, [ReqID, From, BKey], []).
+start_link(ReqID, From, BKey, Options) ->
+    gen_fsm:start_link(?MODULE, [ReqID, From, BKey, Options], []).
 
 %%%===================================================================
 %%% States
 %%%===================================================================
 
 %% Initialize state data.
-init([ReqId, From, BKey]) ->
+init([ReqId, From, BKey, Options]) ->
+    MinAcks = proplists:get_value(?OPT_READ_MIN_ACKS, Options),
+    %% Sanity check
+    true = ?REPLICATION_FACTOR >= MinAcks,
     State = #state{ req_id      = ReqId,
                     from        = From,
                     key         = BKey,
                     replicas    = basic_db_utils:replica_nodes(BKey),
-                    acks        = 0,
-                    good_acks   = 0,
-                    reply       = dvv:new(),
-                    timeout     = ?DEFAULT_TIMEOUT
+                    min_acks    = MinAcks,
+                    do_rr       = proplists:get_value(?OPT_DO_RR, Options),
+                    replies     = [],
+                    timeout     = proplists:get_value(?OPT_TIMEOUT, Options, ?DEFAULT_TIMEOUT)
     },
     {ok, execute, State, 0}.
-
-% %% @doc Calculate the Replica Nodes.
-% prepare(timeout, State=#state{key=Key}) ->
-%     % add an entry in the read requests to track responses from remote nodes
-%     Replies = dict:store(RequestId, {MinResponses, dvv:new()}, State#state.reads),
-%     {next_state, execute, State#state{replies = Replies, replicas=basic_db_utils:replica_nodes(Key)}, 0}.
 
 %% @doc Execute the get reqs.
 execute(timeout, State=#state{  req_id      = ReqId,
@@ -71,101 +76,59 @@ waiting(timeout, State=#state{  req_id      = ReqID,
     From ! {ReqID, timeout},
     {stop, timeout, State};
 
-waiting({ok, ReqID, Response}, State=#state{    req_id      = ReqID,
+waiting({ok, ReqID, IndexNode, Response}, State=#state{
+                                                req_id      = ReqID,
                                                 from        = From,
-                                                reply       = Reply,
-                                                acks        = Acks,
-                                                good_acks   = GoodAcks}) ->
-    % synchronize with the current object, or don't if the response is not_found
-    % not_found still counts as a valid response
-    {NewGoodAcks, NewAcks, MaybeError, NewReply} =
-        case Response of
-            {error, Error}  -> {GoodAcks  , Acks+1, Error    , Reply};
-            _               -> {GoodAcks+1, Acks+1, no_error, dvv:sync(Response,Reply)}
-        end,
-    NewState = State#state{acks = NewAcks, good_acks = NewGoodAcks, reply = NewReply},
+                                                replies     = Replies,
+                                                min_acks    = Min}) ->
+    %% Add the new response to Replies. If it's a not_found or an error, add an empty DVV.
+    Replies2 =  case Response of
+                    {ok, DVV}   -> [{IndexNode, DVV} | Replies];
+                    _           -> [{IndexNode, dvv:new()} | Replies]
+                end,
+    NewState = State#state{replies = Replies2},
     % test if we have enough responses to respond to the client
-    case NewGoodAcks >= ?R of
+    case length(Replies2) >= Min of
         true -> % we already have enough responses to acknowledge back to the client
-            case NewReply =:= dvv:new() orelse dvv:values(NewReply) =:= [] of
-                true -> % no response found; return the context for possibly future writes
-                    From ! {ReqID, not_found, get, dvv:join(NewReply)};
-                false -> % there is at least on value for this key
-                    From ! {ReqID, ok, get, {dvv:values(NewReply), dvv:join(NewReply)}}
-            end,
-            {stop, normal, NewState};
-        false -> % we still need more (good) responses
-            case NewAcks >= ?N of
-                true  -> % not enough good nodes responded, return error
-                    From ! {ReqID, error, MaybeError},
-                    {stop, normal, NewState};
-                false -> % we still miss some responses from replica nodes 
-                    {next_state, waiting, NewState}
-            end
+            From ! create_client_reply(ReqID, Replies2),
+            case length(Replies2) >= ?REPLICATION_FACTOR of
+                true -> % we got all replies from all replica nodes
+                    {next_state, finalize, NewState, 0};
+                false -> % wait for all replica nodes
+                    {next_state, waiting2, NewState}
+            end;
+        false -> % we still miss some responses to respond to the client
+            {next_state, waiting, NewState}
     end.
 
+waiting2(timeout, State) ->
+    {next_state, finalize, State, 0};
+waiting2({ok, ReqID, IndexNode, Response}, State=#state{
+                                                req_id      = ReqID,
+                                                from        = From,
+                                                replies     = Replies}) ->
+    %% Add the new response to Replies. If it's a not_found or an error, add an empty DVV.
+    Replies2 =  case Response of
+                    {ok, DVV}   -> [{IndexNode, DVV} | Replies];
+                    _           -> [{IndexNode, dvv:new()} | Replies]
+                end,
+    NewState = State#state{replies = Replies2},
+    case length(Replies2) >= ?REPLICATION_FACTOR of
+        true -> % we got all replies from all replica nodes
+            {next_state, finalize, NewState, 0};
+        false -> % wait for all replica nodes
+            {next_state, waiting2, NewState}
+    end.
 
-% finalize(timeout, State=#state{ req_id      = ReqID, 
-%                                 reply       = Reply, 
-%                                 from        = From}) ->
-%     ?PRINT("finalize :)"),
-%     case Reply =:= {} of
-%         true -> % no response found
-%             ?PRINT("fin: not found"),
-%             From ! {ReqID, not_found};
-%         false -> % there an answer
-%             ?PRINT("fin: good"),
-%             From ! {ReqID, ok, {dvv:values(Reply), dvv:join(Reply)}}
-%     end,
-%     % MObj = merge(Replies),
-%     % case needs_repair(MObj, Replies) of
-%     %     true ->
-%     %         repair(Key, MObj, Replies),
-%     %         {stop, normal, SD};
-%     %     false ->
-%     %         {stop, normal, SD}
-%     % end.
-%     {stop, normal, State};
-% finalize({ok, ReqID, _Response}, State=#state{req_id = ReqID}) ->
-%     ?PRINT("finalize: discard"),
-%     {stop, normal, State}.
-
-% %% @doc Wait for R replies and then respond to "From", the original client
-% %% that called `rts:get/2'.
-% waiting({ok, ReqID, IdxNode, Obj},
-%         SD0=#state{from=From, num_r=NumR0, replies=Replies0,
-%                    r=R, timeout=Timeout}) ->
-%     NumR = NumR0 + 1,
-%     Replies = [{IdxNode, Obj}|Replies0],
-%     SD = SD0#state{num_r=NumR,replies=Replies},
-
-%     if
-%         NumR =:= R ->
-%             % Reply = rts_obj:val(merge(Replies)),
-%             Reply = "nice",
-%             From ! {ReqID, ok, Reply},
-
-%             if NumR =:= ?N -> {next_state, finalize, SD, 0};
-%                true -> {next_state, wait_for_n, SD, Timeout}
-%             end;
-%         true -> {next_state, waiting, SD}
-%     end.
-
-% wait_for_n({ok, _ReqID, IdxNode, Obj},
-%              SD0=#state{num_r=?N - 1, replies=Replies0, key=_Key}) ->
-%     Replies = [{IdxNode, Obj}|Replies0],
-%     {next_state, finalize, SD0#state{num_r=?N, replies=Replies}, 0};
-
-% wait_for_n({ok, _ReqID, IdxNode, Obj},
-%              SD0=#state{num_r=NumR0, replies=Replies0,
-%                         key=_Key, timeout=Timeout}) ->
-%     NumR = NumR0 + 1,
-%     Replies = [{IdxNode, Obj}|Replies0],
-%     {next_state, wait_for_n, SD0#state{num_r=NumR, replies=Replies}, Timeout};
-
-% %% TODO partial repair?
-% wait_for_n(timeout, SD) ->
-%     {stop, timeout, SD}.
+finalize(timeout, State=#state{ do_rr       = false}) ->
+    lager:debug("GET_FSM: read repair OFF"),
+    {stop, normal, SD}.
+finalize(timeout, State=#state{ key         = BKey,
+                                do_rr       = true,
+                                replies     = Replies}) ->
+    lager:debug("GET_FSM: read repair ON"),
+    read_repair(BKey, Replies),
+    {stop, normal, SD}.
 
 
 handle_info(_Info, _StateName, StateData) ->
@@ -177,9 +140,10 @@ handle_event(_Event, _StateName, StateData) ->
 handle_sync_event(_Event, _From, _StateName, StateData) ->
     {stop,badmsg,StateData}.
 
-code_change(_OldVsn, StateName, State, _Extra) -> {ok, StateName, State}.
+code_change(_OldVsn, StateName, State, _Extra) -> 
+    {ok, StateName, State}.
 
-terminate(_Reason, _SN, _SD) ->
+terminate(_Reason, _SN, _State) ->
     ok.
 
 
@@ -187,46 +151,24 @@ terminate(_Reason, _SN, _SD) ->
 %%% Internal Functions
 %%%===================================================================
 
+-spec read_repair(bkey(), [{index_node(), dvv:clock()}]) -> ok.
+read_repair(BKey, Replies) ->
+    FinalDVV = final_dvv_from_replies(Replies),
+    OutadedNodes = [IN || {IN,DVV} <- Replies,
+                        not ( dvv:equal(FinalDVV, DVV) orelse dvv:less(FinalDVV, DVV) )],
+    basic_db_vnode:read(OutadedNodes, BKey, FinalDVV),
+    ok.
 
-% %% @pure
-% %%
-% %% @doc Given a list of `Replies' return the merged value.
-% -spec merge([vnode_reply()]) -> rts_obj() | not_found.
-% merge(Replies) ->
-%     Objs = [Obj || {_,Obj} <- Replies],
-%     rts_obj:merge(Objs).
+-spec read_repair([index_node()]) -> dvv:clock().
+final_dvv_from_replies(Replies) -> 
+    DVVs = [DVV || {_,DVV} <- Replies],
+    dvv:sync(DVVs).
 
-
-
-% %% @pure
-% %%
-% %% @doc Given the merged object `MObj' and a list of `Replies'
-% %% determine if repair is needed.
-% -spec needs_repair(any(), [vnode_reply()]) -> boolean().
-% needs_repair(MObj, Replies) ->
-%     Objs = [Obj || {_,Obj} <- Replies],
-%     lists:any(different(MObj), Objs).
-
-% %% @pure
-% different(A) -> fun(B) -> not rts_obj:equal(A,B) end.
-
-% %% @impure
-% %%
-% %% @doc Repair any vnodes that do not have the correct object.
-% -spec repair(string(), rts_obj(), [vnode_reply()]) -> io.
-% repair(_, _, []) -> io;
-
-% repair(Key, MObj, [{IdxNode,Obj}|T]) ->
-%     case rts_obj:equal(MObj, Obj) of
-%         true -> repair(Key, MObj, T);
-%         false ->
-%             rts_stat_vnode:repair(IdxNode, Key, MObj),
-%             repair(Key, MObj, T)
-%     end.
-
-% %% pure
-% %%
-% %% @doc Given a list return the set of unique values.
-% -spec unique([A::any()]) -> [A::any()].
-% unique(L) ->
-%     sets:to_list(sets:from_list(L)).
+create_client_reply(ReqID, Replies) ->
+    FinalDVV = final_dvv_from_replies(Replies),
+    case FinalDVV =:= dvv:new() of
+        true -> % no response found; return the context for possibly future writes
+            {ReqID, not_found, get, dvv:join(FinalDVV)};
+        false -> % there is at least on value for this key
+            {ReqID, ok, get, {dvv:values(FinalDVV), dvv:join(FinalDVV)}}
+    end,

@@ -17,7 +17,7 @@ primary_node(BKey) ->
 -spec replica_nodes(bkey()) -> [index_node()].
 replica_nodes(BKey) ->
     DocIdx = riak_core_util:chash_key(BKey),
-    [IndexNode || {IndexNode, _Type} <- riak_core_apl:get_primary_apl(DocIdx, ?N, basic_db)].
+    [IndexNode || {IndexNode, _Type} <- riak_core_apl:get_primary_apl(DocIdx, ?REPLICATION_FACTOR, basic_db)].
 
 -spec replica_nodes_indices(key()) -> [index()].
 replica_nodes_indices(Key) ->
@@ -50,7 +50,7 @@ random_index_from_node(TargetNode) ->
 %% ring and the next N-1.
 -spec peers(index()) -> [index()].
 peers(NodeIndex) ->
-    peers(NodeIndex, ?N).
+    peers(NodeIndex, ?REPLICATION_FACTOR).
 -spec peers(index(), pos_integer()) -> [index_node()].
 peers(NodeIndex, N) ->
     % {ok, Ring} = riak_core_ring_manager:get_my_ring(),
@@ -73,10 +73,24 @@ random_from_list(List) ->
     % properly seeding the process
     <<A:32, B:32, C:32>> = crypto:rand_bytes(12),
     random:seed({A,B,C}),
-    % get a random index withing the length of the list
+    % get a random index within the length of the list
     Index = random:uniform(length(List)),
     % return the element in that index
     lists:nth(Index,List).
+
+
+%% @doc Returns a random element from a given list.
+-spec random_sublist([any()], integer()) -> [any()].
+random_sublist(List, N) ->
+    % properly seeding the process
+    <<A:32, B:32, C:32>> = crypto:rand_bytes(12),
+    random:seed({A,B,C}),
+    % Assign a random value for each element in the list.
+    List1 = [{random:uniform(), E} || E <- List],
+    % Sort by the random number
+    List2 = lists:sort(List1),
+    % Take the first N elements
+    lists:sublist(List2, N).
 
 -spec encode_kv(term()) -> binary().
 encode_kv(Term) ->
@@ -218,7 +232,7 @@ preflist_siblings(Index, N, Ring) ->
 get_index_n(BinBKey) ->
     % BucketProps = riak_core_bucket:get_bucket(Bucket),
     % N = proplists:get_value(n_val, BucketProps),
-    N = ?N,
+    N = ?REPLICATION_FACTOR,
     ChashKey = riak_core_util:chash_key(BinBKey),
     {ok, CHBin} = riak_core_ring_manager:get_chash_bin(),
     Index = chashbin:responsible_index(ChashKey, CHBin),

@@ -22,6 +22,7 @@
 
 -export([
          read/3,
+         read_repair/3,
          write/6,
          replicate/4,
          hashtree_pid/1,
@@ -40,7 +41,9 @@
         id          :: id(),
         % index on the consistent hashing ring
         index       :: index(),
-        % key->value store, where the value is a DCC (values + logical clock)
+        % the current node pid
+        node        :: node(),
+        % key->value store, where the value is a DVV (values + logical clock)
         storage     :: basic_db_storage:storage(),
         % server that handles the hashtrees for this vnode
         hashtrees   :: pid(),
@@ -71,6 +74,12 @@ read(ReplicaNodes, ReqID, BKey) ->
                                    ?MASTER).
 
 
+read_repair(OutdatedNodes, BKey, DVV) ->
+    riak_core_vnode_master:command(OutdatedNodes,
+                                   {read_repair, BKey, DVV},
+                                   {fsm, undefined, self()},
+                                   ?MASTER).
+
 write(Coordinator, ReqID, Op, BKey, Value, Context) ->
     riak_core_vnode_master:command(Coordinator,
                                    {write, ReqID, Op, BKey, Value, Context},
@@ -78,9 +87,9 @@ write(Coordinator, ReqID, Op, BKey, Value, Context) ->
                                    ?MASTER).
 
 
-replicate(ReplicaNodes, ReqID, BKey, DCC) ->
+replicate(ReplicaNodes, ReqID, BKey, DVV) ->
     riak_core_vnode_master:command(ReplicaNodes,
-                                   {replicate, ReqID, BKey, DCC},
+                                   {replicate, ReqID, BKey, DVV},
                                    {fsm, undefined, self()},
                                    ?MASTER).
 
@@ -134,6 +143,7 @@ init([Index]) ->
         % for now, lets use the index in the consistent hash as the vnode ID
         id          = Index,
         index       = Index,
+        node        = node(),
         storage     = Storage,
         hashtrees   = undefined,
         stats       = true
@@ -151,7 +161,7 @@ handle_command({read, ReqID, BKey}, _Sender, State) ->
         case basic_db_storage:get(State#state.storage, BKey) of
             {error, not_found} -> 
                 % there is no key K in this node
-                {};
+                not_found;
             {error, Error} -> 
                 % some unexpected error
                 lager:error("Error reading a key from storage (command read): ~p", [Error]),
@@ -159,16 +169,32 @@ handle_command({read, ReqID, BKey}, _Sender, State) ->
                 {error, Error};
             DVV ->
                 % get and fill the causal history of the local object
-                DVV
+                {ok, DVV}
         end,
     % Optionally collect stats
     case State#state.stats of
         true -> ok;
         false -> ok
     end,
-    {reply, {ok, ReqID, Response}, State};
+    IndexNode = {State#state.index, State#state.node},
+    {reply, {ok, ReqID, IndexNode, Response}, State};
 
 
+handle_command({read_repair, BKey, NewDVV}, _Sender, State) ->
+    % get the local DVV
+    DiskDVV = guaranteed_get(BKey, State),
+    % synchronize both objects
+    FinalDVV = dvv:sync(NewDVV, DiskDVV),
+    % save the new DVV
+    ok = basic_db_storage:put(State#state.storage, BKey, FinalDVV),
+    % update the hashtree with the new dvv
+    update_hashtree(BKey, FinalDVV, State),
+    % Optionally collect stats
+    case State#state.stats of
+        true -> ok;
+        false -> ok
+    end,
+    {noreply, State};
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -204,11 +230,11 @@ handle_command({write, ReqID, Operation, BKey, Value, Context}, _Sender, State) 
 
 
 handle_command({replicate, ReqID, BKey, NewDVV}, _Sender, State) ->
-    % get and fill the causal history of the local key
+    % get the local DVV
     DiskDVV = guaranteed_get(BKey, State),
     % synchronize both objects
     FinalDVV = dvv:sync(NewDVV, DiskDVV),
-    % save the new key DCC, while stripping the unnecessary causality
+    % save the new DVV
     ok = basic_db_storage:put(State#state.storage, BKey, FinalDVV),
     % update the hashtree with the new dvv
     update_hashtree(BKey, FinalDVV, State),
