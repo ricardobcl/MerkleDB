@@ -143,12 +143,12 @@ sanitize_options_get(Options) when is_list(Options) ->
     %% Unfolds all occurrences of atoms in Options to tuples {Atom, true}.
     Options1 = proplists:unfold(Options),
     %% Default read repair to true.
-    DoReadRepair = proplists:get_value(read_repair, Options1, true),
+    DoReadRepair = proplists:get_value(?OPT_DO_RR, Options1, true),
     %% Default number of required replicas keys received to 2.
-    ReplicasResponses = proplists:get_value(replicas, Options1, 2),
-    Options2 = proplists:delete(read_repair, Options1),
-    Options3 = proplists:delete(replicas, Options2),
-    [{read_repair, DoReadRepair}, {replicas,ReplicasResponses}] ++ Options3.
+    ReplicasResponses = proplists:get_value(?OPT_READ_MIN_ACKS, Options1, 2),
+    Options2 = proplists:delete(?OPT_DO_RR, Options1),
+    Options3 = proplists:delete(?OPT_READ_MIN_ACKS, Options2),
+    [{?OPT_DO_RR, DoReadRepair}, {?OPT_READ_MIN_ACKS,ReplicasResponses}] ++ Options3.
 
 
 
