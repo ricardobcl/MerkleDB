@@ -206,6 +206,11 @@ values({C,Vs}) -> Vs ++ lists:append([L || {_,_,L} <- C]).
 %% @doc Compares the equality of both clocks, regarding
 %% only the causal histories, thus ignoring the values.
 -spec equal(clock() | vector(), clock() | vector()) -> boolean().
+equal({[],[]}, B) -> equal({},B);
+equal(A, {[],[]}) -> equal(A,{});
+equal({},{}) -> true;
+equal({},{[_|_],_}) -> false;
+equal({[_|_],_},{}) -> false;
 equal({C1,_},{C2,_}) -> equal2(C1,C2); % DVVSet
 equal(C1,C2) when is_list(C1) and is_list(C2) -> equal2(C1,C2). %vector clocks
 
@@ -221,6 +226,11 @@ equal2(_, _) -> false.
 %% the second clock, thus values on the first clock are outdated.
 %% Returns False otherwise.
 -spec less(clock(), clock()) -> boolean().
+less({[],[]}, B) -> less({},B);
+less(A, {[],[]}) -> less(A,{});
+less({},{}) -> false;
+less({},{[_|_],_}) -> true;
+less({[_|_],_},{}) -> false;
 less({C1,_}, {C2,_}) -> greater(C2, C1, false).
 
 %% Private function
