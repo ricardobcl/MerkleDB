@@ -22,15 +22,19 @@ task :errors do
   sh "cat dev/dev4/log/error.log dev/dev4/log/crash.log| wc -l" rescue "print errors error"
 end
 
+desc "resets the errors and crash logs"
+task :clean_errors do
+  sh "rm -f dev/dev?/log/error.log dev/dev?/log/crash.log"
+  sh "touch dev/dev1/log/error.log dev/dev1/log/crash.log" rescue "print clean error"
+  sh "touch dev/dev2/log/error.log dev/dev2/log/crash.log" rescue "print clean error"
+  sh "touch dev/dev3/log/error.log dev/dev3/log/crash.log" rescue "print clean error"
+  sh "touch dev/dev4/log/error.log dev/dev4/log/crash.log" rescue "print clean error"
+end
+
 desc "attach to a basicDB console"
 task :attach, :node do |t, args|
   args.with_defaults(:node => 1)
   sh %{dev/dev#{args.node}/bin/basic_db attach} rescue "attach error"
-end
-
-desc "attach to a basicDB console (on dev2)"
-task :attach2 do
-  sh "dev/dev2/bin/basic_db attach" rescue "attach2 error"
 end
 
 desc "make a binary release"
