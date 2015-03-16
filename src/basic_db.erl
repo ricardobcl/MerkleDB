@@ -275,13 +275,13 @@ do_put(BKey, Value, Context, Options, {?MODULE, TargetNode}) ->
 sanitize_options_put(Options) when is_list(Options) ->
     %% Unfolds all occurrences of atoms in Options to tuples {Atom, true}.
     Options1 = proplists:unfold(Options),
-    %% Default number of replica nodes contacted to 3
-    ReplicataNodes = proplists:get_value(n_replicate, Options1, 3),
-    %% Default number of acks from replica nodes to 2
-    ReplicasResponses = proplists:get_value(acks, Options1, 2),
-    Options2 = proplists:delete(n_replicate, Options1),
-    Options3 = proplists:delete(acks, Options2),
-    [{n_replicate, ReplicataNodes}, {acks,ReplicasResponses}] ++ Options3.
+    %% Default number of replica nodes contacted to the replication factor.
+    ReplicataNodes = proplists:get_value(?OPT_PUT_REPLICAS, Options1, ?REPLICATION_FACTOR-1),
+    %% Default number of acks from replica nodes to 2.
+    ReplicasResponses = proplists:get_value(?OPT_PUT_MIN_ACKS, Options1, 2),
+    Options2 = proplists:delete(?OPT_PUT_REPLICAS, Options1),
+    Options3 = proplists:delete(?OPT_PUT_MIN_ACKS, Options2),
+    [{?OPT_PUT_REPLICAS, ReplicataNodes}, {?OPT_PUT_MIN_ACKS,ReplicasResponses}] ++ Options3.
 
 
 

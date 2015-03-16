@@ -13,7 +13,7 @@
          handle_sync_event/4, terminate/3]).
 
 %% States
--export([execute/2, waiting/2]).
+-export([execute/2, waiting/2, waiting2/2, finalize/2]).
 
 -record(state, {
     %% Unique request ID.
@@ -105,7 +105,6 @@ waiting2(timeout, State) ->
     {next_state, finalize, State, 0};
 waiting2({ok, ReqID, IndexNode, Response}, State=#state{
                                                 req_id      = ReqID,
-                                                from        = From,
                                                 replies     = Replies}) ->
     %% Add the new response to Replies. If it's a not_found or an error, add an empty DVV.
     Replies2 =  case Response of
@@ -122,13 +121,13 @@ waiting2({ok, ReqID, IndexNode, Response}, State=#state{
 
 finalize(timeout, State=#state{ do_rr       = false}) ->
     lager:debug("GET_FSM: read repair OFF"),
-    {stop, normal, SD}.
-finalize(timeout, State=#state{ key         = BKey,
-                                do_rr       = true,
+    {stop, normal, State};
+finalize(timeout, State=#state{ do_rr       = true,
+                                key         = BKey,
                                 replies     = Replies}) ->
     lager:debug("GET_FSM: read repair ON"),
     read_repair(BKey, Replies),
-    {stop, normal, SD}.
+    {stop, normal, State}.
 
 
 handle_info(_Info, _StateName, StateData) ->
@@ -159,7 +158,7 @@ read_repair(BKey, Replies) ->
     basic_db_vnode:read(OutadedNodes, BKey, FinalDVV),
     ok.
 
--spec read_repair([index_node()]) -> dvv:clock().
+-spec final_dvv_from_replies([index_node()]) -> dvv:clock().
 final_dvv_from_replies(Replies) -> 
     DVVs = [DVV || {_,DVV} <- Replies],
     dvv:sync(DVVs).
@@ -171,4 +170,4 @@ create_client_reply(ReqID, Replies) ->
             {ReqID, not_found, get, dvv:join(FinalDVV)};
         false -> % there is at least on value for this key
             {ReqID, ok, get, {dvv:values(FinalDVV), dvv:join(FinalDVV)}}
-    end,
+    end.

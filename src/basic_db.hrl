@@ -17,7 +17,7 @@
 
 %% Options for put/delete requests.
 -define(OPT_PUT_REPLICAS, put_replicas).
--define(OPT_PUT_ACKS, put_acks).
+-define(OPT_PUT_MIN_ACKS, put_acks).
 
 -define(OPT_TIMEOUT, opt_timeout).
 

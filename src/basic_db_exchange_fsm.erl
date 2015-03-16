@@ -20,6 +20,7 @@
 
 -module(basic_db_exchange_fsm).
 -behaviour(gen_fsm).
+-include_lib("basic_db.hrl").
 
 %% API
 -export([start/5]).
@@ -33,7 +34,6 @@
 -export([init/1, handle_event/3, handle_sync_event/4, handle_info/3,
          terminate/3, code_change/4]).
 
--type index() :: non_neg_integer().
 -type index_n() :: {index(), pos_integer()}.
 -type vnode() :: {index(), node()}.
 
@@ -288,7 +288,7 @@ read_repair_keydiff(RC, LocalVN, RemoteVN, {Bucket, Key, _Reason}) ->
     %%       redbug to trace read_repair_keydiff when needed. Of course,
     %%       users can't do that.
     lager:debug("Anti-entropy forced read repair: ~p/~p", [Bucket, Key]),
-    RC:get(Key),
+    RC:get_at_node({Bucket, Key}, [?OPT_DO_RR]),
     %% Force vnodes to update AAE tree in case read repair wasn't triggered
     basic_db_vnode:rehash([LocalVN, RemoteVN], Bucket, Key),
     timer:sleep(basic_db_entropy_manager:get_aae_throttle()),
