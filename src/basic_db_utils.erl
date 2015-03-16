@@ -82,15 +82,17 @@ random_from_list(List) ->
 %% @doc Returns a random element from a given list.
 -spec random_sublist([any()], integer()) -> [any()].
 random_sublist(List, N) ->
-    % properly seeding the process
+    % Properly seeding the process.
     <<A:32, B:32, C:32>> = crypto:rand_bytes(12),
     random:seed({A,B,C}),
     % Assign a random value for each element in the list.
     List1 = [{random:uniform(), E} || E <- List],
-    % Sort by the random number
+    % Sort by the random number.
     List2 = lists:sort(List1),
-    % Take the first N elements
-    lists:sublist(List2, N).
+    % Take the first N elements.
+    List3 = lists:sublist(List2, N),
+    % Remove the random numbers.
+    [ E || {_,E} <- List3].
 
 -spec encode_kv(term()) -> binary().
 encode_kv(Term) ->
