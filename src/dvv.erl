@@ -54,6 +54,8 @@
          join/1,
          update/2,
          update/3,
+         delete/2,
+         delete/3,
          size/1,
          ids/1,
          values/1,
@@ -186,6 +188,29 @@ event([], I, V) -> [{I, 1, [V]}];
 event([{I, N, L} | T], I, V) -> [{I, N+1, [V | L]} | T];
 event([{I1, _, _} | _]=C, I, V) when I1 > I -> [{I, 1, [V]} | C];
 event([H | T], I, V) -> [H | event(T, I, V)].
+
+
+%% @doc Increments the counter for the Id and removes all values.
+-spec delete(clock(), id()) -> clock().
+delete(C, I) ->
+    delete(C, {}, I).
+
+-spec delete(clock(), clock(), id()) -> clock().
+delete({C,_}, Ctx, I) ->
+    %% Sync both clocks
+    {C2,_} = sync({C,[]}, Ctx),
+    %% Delete all values and increment the respective counter
+    {inc(C2, I, false), []}.
+
+%% Private function
+-spec inc(entries(), id(), Found :: boolean()) -> entries().
+inc([], _, true) -> [];
+inc([], Id, false) -> [{Id,1,[]}];
+inc([{I,N,_} | T], Id, _) when I =:= Id ->
+    [{I,N+1,[]} | inc(T,Id,true)];
+inc([{I,N,_} | T], Id, Found) when I =/= Id ->
+    [{I,N,[]}   | inc(T,Id,Found)].
+
 
 %% @doc Returns the total number of values in this clock set.
 -spec size(clock()) -> non_neg_integer().
@@ -347,6 +372,19 @@ update_test() ->
     ?assertEqual( A2 , {[{a,2,[]}, {b,1,[v3]}],[]}      ),
     ?assertEqual( A3 , {[{a,2,[v2]}, {b,1,[v4]}],[]}    ),
     ?assertEqual( A4 , {[{a,3,[v5,v2]}],[]}             ),
+    ok.
+
+delete_test() ->
+    A0 = delete(new([v1]),a),
+    A1 = delete(new(join(A0),[v2]), A0, a),
+    A2 = delete(new(join(A1),[v3]), A1, b),
+    A3 = delete(new(join(A0),[v4]), A1, b),
+    A4 = delete(new(join(A0),[v5]), A1, a),
+    ?assertEqual( A0 , {[{a,1,[]}],[]}              ),
+    ?assertEqual( A1 , {[{a,2,[]}],[]}              ),
+    ?assertEqual( A2 , {[{a,2,[]}, {b,1,[]}],[]}    ),
+    ?assertEqual( A3 , {[{a,2,[]}, {b,1,[]}],[]}    ),
+    ?assertEqual( A4 , {[{a,3,[]}],[]}              ),
     ok.
 
 sync_test() ->
