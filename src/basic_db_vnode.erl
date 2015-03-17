@@ -209,7 +209,7 @@ handle_command({write, ReqID, Operation, BKey, Value, Context}, _Sender, State) 
     NewDVV = case Operation of
             ?DELETE_OP  -> % DELETE
                 ClientDVV = dvv:new(Context, []),
-                dvv:sync(ClientDVV, DiskDVV);
+                dvv:delete(ClientDVV, DiskDVV, State#state.id;
             ?WRITE_OP   -> % PUT
                 % create a new DVVSet for the new value V, using the client's context
                 ClientDVV = dvv:new(Context, Value),
