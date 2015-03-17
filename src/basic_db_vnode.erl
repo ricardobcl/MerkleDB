@@ -22,7 +22,7 @@
 
 -export([
          read/3,
-         read_repair/3,
+         repair/3,
          write/6,
          replicate/4,
          hashtree_pid/1,
@@ -74,9 +74,9 @@ read(ReplicaNodes, ReqID, BKey) ->
                                    ?MASTER).
 
 
-read_repair(OutdatedNodes, BKey, DVV) ->
+repair(OutdatedNodes, BKey, DVV) ->
     riak_core_vnode_master:command(OutdatedNodes,
-                                   {read_repair, BKey, DVV},
+                                   {repair, BKey, DVV},
                                    {fsm, undefined, self()},
                                    ?MASTER).
 
@@ -180,7 +180,7 @@ handle_command({read, ReqID, BKey}, _Sender, State) ->
     {reply, {ok, ReqID, IndexNode, Response}, State};
 
 
-handle_command({read_repair, BKey, NewDVV}, _Sender, State) ->
+handle_command({repair, BKey, NewDVV}, _Sender, State) ->
     % get the local DVV
     DiskDVV = guaranteed_get(BKey, State),
     % synchronize both objects

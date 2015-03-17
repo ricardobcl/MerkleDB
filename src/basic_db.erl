@@ -404,6 +404,7 @@ wait_for_reqid(ReqID, Timeout) ->
         {ReqID, error, Error}               -> {error, Error};
         % get
         {ReqID, not_found, get, Context}    -> {not_found, Context};
+        {ReqID, ok, get, ?OPT_REPAIR}       -> {ok, ?OPT_REPAIR};
         {ReqID, ok, get, Reply}             -> {ok, decode_get_reply(Reply)};
         % put/delete
         {ReqID, ok, update}                 -> ok;

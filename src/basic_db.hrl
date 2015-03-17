@@ -14,6 +14,7 @@
 %% Options for read requests.
 -define(OPT_DO_RR, do_read_repair).
 -define(OPT_READ_MIN_ACKS, read_acks).
+-define(OPT_REPAIR, repair_key).
 
 %% Options for put/delete requests.
 -define(OPT_PUT_REPLICAS, put_replicas).

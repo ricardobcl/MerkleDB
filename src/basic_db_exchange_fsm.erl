@@ -77,7 +77,7 @@ init([LocalVN, RemoteVN, IndexN, LocalTree, Manager]) ->
                    timeout=Timeout,
                    built=0},
     gen_fsm:send_event(self(), start_exchange),
-    lager:debug("Starting exchange: from ~p to ~p", [LocalVN,RemoteVN]),
+    % lager:debug("Starting exchange: from ~p to ~p", [LocalVN,RemoteVN]),
     {ok, prepare_exchange, State}.
 
 handle_event(_Event, StateName, State) ->
@@ -148,8 +148,8 @@ update_trees(start_exchange, State=#state{local=LocalVN,
                                           local_tree=LocalTree,
                                           remote_tree=RemoteTree,
                                           index_n=IndexN}) ->
-    lager:debug("Sending to ~p", [LocalVN]),
-    lager:debug("Sending to ~p", [RemoteVN]),
+    % lager:debug("Sending to ~p", [LocalVN]),
+    % lager:debug("Sending to ~p", [RemoteVN]),
 
     update_request(LocalTree, LocalVN, IndexN),
     update_request(RemoteTree, RemoteVN, IndexN),
@@ -163,7 +163,7 @@ update_trees({tree_built, _, _}, State) ->
     Built = State#state.built + 1,
     case Built of
         2 ->
-            lager:debug("Moving to key exchange"),
+            % lager:debug("Moving to key exchange"),
             {next_state, key_exchange, State, 0};
         _ ->
             {next_state, update_trees, State#state{built=Built}}
@@ -176,8 +176,8 @@ key_exchange(timeout, State=#state{local=LocalVN,
                                    local_tree=LocalTree,
                                    remote_tree=RemoteTree,
                                    index_n=IndexN}) ->
-    lager:debug("Starting key exchange between ~p and ~p", [LocalVN, RemoteVN]),
-    lager:debug("Exchanging hashes for preflist ~p", [IndexN]),
+    % lager:debug("Starting key exchange between ~p and ~p", [LocalVN, RemoteVN]),
+    % lager:debug("Exchanging hashes for preflist ~p", [IndexN]),
 
     TmpDir = tmp_dir(),
     {NA, NB, NC} = Now = WriteLog = now(),
@@ -241,8 +241,8 @@ key_exchange(timeout, State=#state{local=LocalVN,
             %% likely to be nearby on disk of block N+1.
             StartTime = now(),
             ok = sort_disk_log(LogFile1, LogFile2),
-            lager:debug("~s:key_exchange: sorting time = ~p seconds\n",
-                        [?MODULE, timer:now_diff(now(), StartTime) / 1000000]),
+            lager:debug("Sorting time for key_exchange: = ~p sec\n",
+                        [timer:now_diff(now(), StartTime) / 1000000]),
             {ok, ReadLog} = open_disk_log(Now, LogFile2, read_only),
             FoldRes =
                 fold_disk_log(fun(Diff, Acc) ->
@@ -260,9 +260,10 @@ key_exchange(timeout, State=#state{local=LocalVN,
                     send_exchange_status(failed, State),
                     Complete = false
             end,
-            lager:debug("Repaired ~b keys during active anti-entropy exchange "
-                       "of ~p between ~p and ~p",
-                       [Count, IndexN, LocalVN, RemoteVN])
+            % lager:debug("Repaired ~b keys during active anti-entropy exchange "
+            %            "of ~p between ~p and ~p",
+            %            [Count, IndexN, LocalVN, RemoteVN])
+            lager:debug("Repaired ~b keys during AAE", [Count])
     end,
     [exchange_complete(LocalVN, RemoteVN, IndexN, Count) || Complete],
     _ = file:delete(LogFile1),
@@ -287,8 +288,8 @@ read_repair_keydiff(RC, LocalVN, RemoteVN, {Bucket, Key, _Reason}) ->
     %%       spammy. Should this just be removed? We can always use
     %%       redbug to trace read_repair_keydiff when needed. Of course,
     %%       users can't do that.
-    lager:debug("Anti-entropy forced read repair: ~p/~p", [Bucket, Key]),
-    RC:get_at_node({Bucket, Key}, [?OPT_DO_RR]),
+    % lager:debug("Anti-entropy forced read repair: ~p/~p", [Bucket, Key]),
+    RC:get_at_node({Bucket, Key}, [{?OPT_REPAIR, {LocalVN, RemoteVN}}]),
     %% Force vnodes to update AAE tree in case read repair wasn't triggered
     basic_db_vnode:rehash([LocalVN, RemoteVN], Bucket, Key),
     timer:sleep(basic_db_entropy_manager:get_aae_throttle()),

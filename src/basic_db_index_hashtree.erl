@@ -271,7 +271,7 @@ handle_call({delete, Items}, _From, State) ->
     {reply, ok, State2};
 
 handle_call({update_tree, Id}, From, State) ->
-    lager:debug("Updating tree: (vnode)=~p (preflist)=~p", [State#state.index, Id]),
+    % lager:debug("Updating tree: (vnode)=~p (preflist)=~p", [State#state.index, Id]),
     apply_tree(Id,
                fun(Tree) ->
                        {SnapTree, Tree2} = hashtree:update_snapshot(Tree),

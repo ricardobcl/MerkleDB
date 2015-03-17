@@ -449,12 +449,12 @@ maybe_release_lock(Ref, State) ->
     State#state{locks=Locks}.
 
 -spec maybe_clear_exchange(reference(), term(), state()) -> state().
-maybe_clear_exchange(Ref, Status, State) ->
+maybe_clear_exchange(Ref, _Status, State) ->
     case lists:keytake(Ref, 2, State#state.exchanges) of
         false ->
             State;
-        {value, {Idx,Ref,_Pid}, Exchanges} ->
-            lager:debug("Untracking exchange: ~p :: ~p", [Idx, Status]),
+        {value, {_Idx,Ref,_Pid}, Exchanges} ->
+            % lager:debug("Untracking exchange: ~p :: ~p", [Idx, Status]),
             State#state{exchanges=Exchanges}
     end.
 
@@ -509,7 +509,7 @@ maybe_tick(State) ->
 
 -spec tick(state()) -> state().
 tick(State) ->
-    lager:debug("Start new tick for AAE"),
+    % lager:debug("Start new tick for AAE"),
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     State1 = query_and_set_aae_throttle(State),
     State2 = maybe_reload_hashtrees(Ring, State1),

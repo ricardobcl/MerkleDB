@@ -24,10 +24,14 @@
     key         :: bkey(),
     %% The replica nodes for the key.
     replicas    :: riak_core_apl:preflist2(),
-    %% Minimal number of acks from replica nodes.
+    %% Minimum number of acks from replica nodes.
     min_acks    :: non_neg_integer(),
+    %% Maximum number of acks from replica nodes.
+    max_acks    :: non_neg_integer(),
     %% Do read repair on outdated replica nodes.
     do_rr       :: boolean(),
+    %% Return the final value or not
+    return_val  :: boolean(),
     %% The current DVV to return.
     replies     :: [{index_node(), dvv:clock()}],
     %% The timeout value for this request.
@@ -47,16 +51,32 @@ start_link(ReqID, From, BKey, Options) ->
 
 %% Initialize state data.
 init([ReqId, From, BKey, Options]) ->
-    MinAcks = proplists:get_value(?OPT_READ_MIN_ACKS, Options),
-    %% Sanity check
-    true = ?REPLICATION_FACTOR >= MinAcks,
+    case proplists:get_value(?OPT_REPAIR, Options) of
+        %% This is a normal read request
+        undefined ->
+            Replicas    = basic_db_utils:replica_nodes(BKey),
+            MinAcks     = proplists:get_value(?OPT_READ_MIN_ACKS, Options),
+            MaxAcks     = ?REPLICATION_FACTOR,
+            ReadRepair  = proplists:get_value(?OPT_DO_RR, Options),
+            ReturnValue = true;
+        %% This is a key repair request between two nodes
+        {Node1, Node2} ->
+            Replicas    = [Node1, Node2],
+            MinAcks     = 2,
+            MaxAcks     = 2,
+            ReadRepair  = true,
+            ReturnValue = false
+    end,
+    true = MaxAcks >= MinAcks, % sanity check
     State = #state{ req_id      = ReqId,
                     from        = From,
                     key         = BKey,
-                    replicas    = basic_db_utils:replica_nodes(BKey),
+                    replicas    = Replicas,
                     min_acks    = MinAcks,
-                    do_rr       = proplists:get_value(?OPT_DO_RR, Options),
+                    max_acks    = MaxAcks,
+                    do_rr       = ReadRepair,
                     replies     = [],
+                    return_val  = ReturnValue,
                     timeout     = proplists:get_value(?OPT_TIMEOUT, Options, ?DEFAULT_TIMEOUT)
     },
     {ok, execute, State, 0}.
@@ -80,7 +100,9 @@ waiting({ok, ReqID, IndexNode, Response}, State=#state{
                                                 req_id      = ReqID,
                                                 from        = From,
                                                 replies     = Replies,
-                                                min_acks    = Min}) ->
+                                                return_val  = ReturnValue,
+                                                min_acks    = Min,
+                                                max_acks    = Max}) ->
     %% Add the new response to Replies. If it's a not_found or an error, add an empty DVV.
     Replies2 =  case Response of
                     {ok, DVV}   -> [{IndexNode, DVV} | Replies];
@@ -90,9 +112,9 @@ waiting({ok, ReqID, IndexNode, Response}, State=#state{
     % test if we have enough responses to respond to the client
     case length(Replies2) >= Min of
         true -> % we already have enough responses to acknowledge back to the client
-            From ! create_client_reply(ReqID, Replies2),
-            case length(Replies2) >= ?REPLICATION_FACTOR of
-                true -> % we got all replies from all replica nodes
+            create_client_reply(From, ReqID, Replies2, ReturnValue),
+            case length(Replies2) >= Max of
+                true -> % we got the maximum number of replies sent
                     {next_state, finalize, NewState, 0};
                 false -> % wait for all replica nodes
                     {next_state, waiting2, NewState}
@@ -105,6 +127,7 @@ waiting2(timeout, State) ->
     {next_state, finalize, State, 0};
 waiting2({ok, ReqID, IndexNode, Response}, State=#state{
                                                 req_id      = ReqID,
+                                                max_acks    = Max,
                                                 replies     = Replies}) ->
     %% Add the new response to Replies. If it's a not_found or an error, add an empty DVV.
     Replies2 =  case Response of
@@ -112,8 +135,8 @@ waiting2({ok, ReqID, IndexNode, Response}, State=#state{
                     _           -> [{IndexNode, dvv:new()} | Replies]
                 end,
     NewState = State#state{replies = Replies2},
-    case length(Replies2) >= ?REPLICATION_FACTOR of
-        true -> % we got all replies from all replica nodes
+    case length(Replies2) >= Max of
+        true -> % we got the maximum number of replies sent
             {next_state, finalize, NewState, 0};
         false -> % wait for all replica nodes
             {next_state, waiting2, NewState}
@@ -124,8 +147,13 @@ finalize(timeout, State=#state{ do_rr       = false}) ->
     {stop, normal, State};
 finalize(timeout, State=#state{ do_rr       = true,
                                 key         = BKey,
+                                max_acks    = Max,
                                 replies     = Replies}) ->
-    lager:debug("GET_FSM: read repair ON"),
+    
+    case Max == ?REPLICATION_FACTOR of
+        true  -> lager:debug("GET_FSM: read repair ON");
+        false -> lager:debug("GET_FSM: AAE REPAIR for ~p nodes", [length(Replies)])
+    end,
     read_repair(BKey, Replies),
     {stop, normal, State}.
 
@@ -155,7 +183,7 @@ read_repair(BKey, Replies) ->
     FinalDVV = final_dvv_from_replies(Replies),
     OutadedNodes = [IN || {IN,DVV} <- Replies,
                         not ( dvv:equal(FinalDVV, DVV) orelse dvv:less(FinalDVV, DVV) )],
-    basic_db_vnode:read(OutadedNodes, BKey, FinalDVV),
+    basic_db_vnode:repair(OutadedNodes, BKey, FinalDVV),
     ok.
 
 -spec final_dvv_from_replies([index_node()]) -> dvv:clock().
@@ -163,11 +191,13 @@ final_dvv_from_replies(Replies) ->
     DVVs = [DVV || {_,DVV} <- Replies],
     dvv:sync(DVVs).
 
-create_client_reply(ReqID, Replies) ->
+create_client_reply(From, ReqID, _Replies, _ReturnValue = false) ->
+    From ! {ReqID, ok, get, ?OPT_REPAIR};
+create_client_reply(From, ReqID, Replies, _ReturnValue = true) ->
     FinalDVV = final_dvv_from_replies(Replies),
     case FinalDVV =:= dvv:new() of
         true -> % no response found; return the context for possibly future writes
-            {ReqID, not_found, get, dvv:join(FinalDVV)};
+            From ! {ReqID, not_found, get, dvv:join(FinalDVV)};
         false -> % there is at least on value for this key
-            {ReqID, ok, get, {dvv:values(FinalDVV), dvv:join(FinalDVV)}}
+            From ! {ReqID, ok, get, {dvv:values(FinalDVV), dvv:join(FinalDVV)}}
     end.
