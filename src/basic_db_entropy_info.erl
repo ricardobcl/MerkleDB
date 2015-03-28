@@ -23,6 +23,8 @@
          tree_built/3,
          exchange_complete/4,
          exchange_complete/5,
+         key_repair_complete/2,
+         exchange_total/2,
          create_table/0,
          dump/0,
          compute_exchange_info/0,
@@ -41,14 +43,18 @@
 -type riak_core_ring() :: riak_core_ring:riak_core_ring().
 -type t_now() :: calendar:t_now().
 
--record(simple_stat, {last, min, max, count, sum}).
+-record(simple_stat, {last, min, max, count, sum, fp, tp, total}).
 
 -type simple_stat() :: #simple_stat{}.
 
 -type repair_stats() :: {Last :: pos_integer(),
                          Min  :: pos_integer(),
                          Max  :: pos_integer(),
-                         Mean :: pos_integer()}.
+                         Mean :: pos_integer(),
+                         Sum  :: pos_integer(),
+                         FP   :: non_neg_integer(), %% False Positives
+                         TP   :: non_neg_integer(), %% True Positives
+                         Total:: non_neg_integer()}.%% Total Transfers
 
 -record(exchange_info, {time :: t_now(),
                         repaired :: non_neg_integer()}).
@@ -85,6 +91,15 @@ exchange_complete(Index, RemoteIdx, IndexN, Repaired) ->
 exchange_complete(Type, Index, RemoteIdx, IndexN, Repaired) ->
     update_index_info({Type, Index},
                       {exchange_complete, RemoteIdx, IndexN, Repaired}).
+
+-spec key_repair_complete(index(), DivergentKeys :: non_neg_integer()) -> ok.
+key_repair_complete(LocalIdx, DivergentKeys) ->
+          update_index_info({basic_db, LocalIdx}, {key_repair_complete, DivergentKeys}).
+
+
+-spec exchange_total(index(), Total :: non_neg_integer()) -> ok.
+exchange_total(LocalIdx, Total) ->
+          update_index_info({basic_db, LocalIdx}, {exchange_total, Total}).
 
 %% @doc Called by {@link basic_db_sup} to create public ETS table used for
 %%      holding AAE information for reporting. Table will be owned by
@@ -196,7 +211,15 @@ handle_index_info({exchange_complete, RemoteIdx, IndexN, Repaired}, Info) ->
     RepairStat = update_simple_stat(Repaired, Info#index_info.repaired),
     Info#index_info{exchanges=Exchanges,
                     repaired=RepairStat,
-                    last_exchange=ExId}.
+                    last_exchange=ExId};
+
+handle_index_info({key_repair_complete, DivergentKeys}, Info) ->
+    RepairStat = update_simple_stat_repair(DivergentKeys, Info#index_info.repaired),
+    Info#index_info{repaired=RepairStat};
+
+handle_index_info({exchange_total, Total}, Info) ->
+    RepairStat = update_simple_stat_total(Total, Info#index_info.repaired),
+    Info#index_info{repaired=RepairStat}.
 
 %% Return a list of all exchanges necessary to guarantee that `Index' is
 %% fully up-to-date.
@@ -225,7 +248,7 @@ merge_to_first(L1, L2) ->
     lists:ukeysort(1, L1 ++ L2).
 
 update_simple_stat(Value, undefined) ->
-    #simple_stat{last=Value, min=Value, max=Value, sum=Value, count=1};
+    #simple_stat{last=Value, min=Value, max=Value, sum=Value, count=1,fp=0,tp=0,total=0};
 update_simple_stat(Value, Stat=#simple_stat{max=Max, min=Min, sum=Sum, count=Cnt}) ->
     Stat#simple_stat{last=Value,
                      max=erlang:max(Value, Max),
@@ -233,8 +256,29 @@ update_simple_stat(Value, Stat=#simple_stat{max=Max, min=Min, sum=Sum, count=Cnt
                      sum=Sum+Value,
                      count=Cnt+1}.
 
+update_simple_stat_repair(0, SS) -> %% False positive AAE repair (between 2 keys)
+    SS2 = init_simple_stat(SS),
+    FalsePositives = SS2#simple_stat.fp + 1,
+    SS2#simple_stat{fp=FalsePositives};
+update_simple_stat_repair(DivergentKeys, SS) when DivergentKeys > 0 ->  %% True positive AAE repair (between 2 keys)
+    SS2 = init_simple_stat(SS),
+    TruePositives = SS2#simple_stat.tp + 1,
+    SS2#simple_stat{tp=TruePositives}.
+
+update_simple_stat_total(Total, SS) -> %% False positive AAE repair (between 2 keys)
+    SS2 = init_simple_stat(SS),
+    Total2 = SS2#simple_stat.total + Total,
+    SS2#simple_stat{total=Total2}.
+
+init_simple_stat(undefined) ->
+    #simple_stat{last=0, min=0, max=0, sum=0, count=0, fp=0, tp=0, total=0};
+init_simple_stat(SS) ->
+    SS.
+
 stat_tuple(undefined) ->
     undefined;
-stat_tuple(#simple_stat{last=Last, max=Max, min=Min, sum=Sum, count=Cnt}) ->
-    Mean = Sum div Cnt,
-    {Last, Min, Max, Mean, Sum}.
+stat_tuple(#simple_stat{last=Last, max=Max, min=Min, sum=Sum, count=Cnt, fp=FP, tp=TP, total=Total}) ->
+    FPRate = FP / max(1, (FP+TP)),
+    TotalRate = TP / max(1, Total),
+    Mean = Sum div max(1, Cnt),
+    {Last, Min, Max, Mean, Sum, {FP, TP, FPRate, Total, TotalRate}}.

@@ -185,10 +185,34 @@ key_exchange(timeout, State=#state{local=LocalVN,
                                            [TmpDir, NA, NB, NC])),
     LogFile2 = lists:flatten(io_lib:format("~s/out.~p.~p.~p",
                                            [TmpDir, NA, NB, NC])),
-    Remote = fun(get_bucket, {L, B}) ->
-                     exchange_bucket(RemoteTree, IndexN, L, B);
+    Remote = fun(get_bucket, {Level, Bucket}) ->
+                     case exchange_bucket(RemoteTree, IndexN, Level, Bucket) of
+                         not_responsible ->
+                            not_responsible;
+                         Result ->
+                             Size = byte_size(term_to_binary(Result)),
+                             Size2 = basic_db_utils:human_filesize(Size),
+                             lager:info("Bucket: ~p   Level: ~p   E.bytes: ~s~n", [Bucket, Level, Size2]),
+                             Result
+                     end;
                 (key_hashes, Segment) ->
-                     exchange_segment(RemoteTree, IndexN, Segment);
+                     case exchange_segment(RemoteTree, IndexN, Segment) of
+                         not_responsible ->
+                            not_responsible;
+                         Result ->
+                             Size = byte_size(term_to_binary(Result)),
+                             Size2 = basic_db_utils:human_filesize(Size),
+                             NumberKVs = length(Result),
+                             BytesPerKVHash = Size/max(1,NumberKVs),
+                             lager:info("Seg: ~p   #Keys: ~p   E.bytes: ~s   BytesPerKVHash: ~.1f B~n", [Segment, NumberKVs, Size2, BytesPerKVHash]),
+                             {LocalIdx, _LocalNode} = LocalVN,
+                             {RemoteIdx, RemoteNode} = RemoteVN,
+                             basic_db_entropy_info:exchange_total(LocalIdx, NumberKVs),
+                            %  rpc:cast(LocalNode, basic_db_entropy_info, exchange_total, [LocalIdx, NumberKVs]),
+                             rpc:cast(RemoteNode, basic_db_entropy_info, exchange_total, [RemoteIdx, NumberKVs]),
+                            %  basic_db_entropy_info:exchange_total(RemoteIdx, NumberKVs),
+                             Result
+                     end;
                 (init, _Y) ->
                      %% Our return value is ignored, so we can't return
                      %% the disk log handle here.  However, disk_log is
@@ -246,8 +270,7 @@ key_exchange(timeout, State=#state{local=LocalVN,
             {ok, ReadLog} = open_disk_log(Now, LogFile2, read_only),
             FoldRes =
                 fold_disk_log(fun(Diff, Acc) ->
-                                      read_repair_keydiff(RC, LocalVN, RemoteVN,
-                                                          Diff),
+                                      read_repair_keydiff(RC, LocalVN, RemoteVN, Diff),
                                       Acc + 1
                               end, 0, ReadLog),
             disk_log:close(ReadLog),
@@ -341,7 +364,7 @@ send_exchange_status(Status, #state{local=LocalVN,
 
 exchange_complete({LocalIdx, _}, {RemoteIdx, RemoteNode}, IndexN, Repaired) ->
     basic_db_entropy_info:exchange_complete(LocalIdx, RemoteIdx, IndexN, Repaired),
-    rpc:call(RemoteNode, basic_db_entropy_info, exchange_complete,
+    rpc:cast(RemoteNode, basic_db_entropy_info, exchange_complete,
              [RemoteIdx, LocalIdx, IndexN, Repaired]).
 
 open_disk_log(Name, Path, RWorRO) ->

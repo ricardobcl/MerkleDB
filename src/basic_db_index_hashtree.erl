@@ -26,6 +26,7 @@
 
 -module(basic_db_index_hashtree).
 -behaviour(gen_server).
+-include("basic_db.hrl").
 
 %% API
 -export([start/3, start_link/3]).
@@ -59,7 +60,7 @@
 -export([poke/1,
          get_build_time/1]).
 
--type index() :: non_neg_integer().
+% -type index() :: non_neg_integer().
 -type index_n() :: {index(), non_neg_integer()}.
 -type orddict() :: orddict:orddict().
 -type proplist() :: proplists:proplist().
@@ -452,7 +453,7 @@ fold_keys(Partition, Tree, _HasIndexTree) ->
     % FoldFun = fold_fun(Tree, HasIndexTree),
     FoldFun = fold_fun(Tree, false),
     Req = riak_core_util:make_fold_req(FoldFun,
-                                       0, false, 
+                                       0, false,
                                        [aae_reconstruction,
                                         {iterator_refresh, true}]),
     riak_core_vnode_master:sync_command({Partition, node()},
@@ -537,10 +538,18 @@ do_new_tree(Id, State=#state{trees=Trees, path=Path}) ->
     IdBin = tree_id(Id),
     NewTree = case Trees of
                   [] ->
-                      hashtree:new({Index,IdBin}, [{segment_path, Path}]);
+                      hashtree:new({Index,IdBin},
+                                  [   {segment_path, Path},
+                                      {segments, ?MTREE_CHILDREN*?MTREE_CHILDREN},
+                                      {width, ?MTREE_CHILDREN}
+                                  ]);
                   [{_,Other}|_] ->
-                      hashtree:new({Index,IdBin}, Other)
+                      hashtree:new({Index,IdBin}, Other,
+                                  [   {segments, ?MTREE_CHILDREN*?MTREE_CHILDREN},
+                                      {width, ?MTREE_CHILDREN}
+                                  ])
               end,
+    lager:info("New Merkle Tree: ~p segments!", [hashtree:segments(NewTree)]),
     Trees2 = orddict:store(Id, NewTree, Trees),
     State#state{trees=Trees2}.
 
@@ -656,7 +665,7 @@ expand_item(_, Item, Others) ->
 do_insert_expanded([], _Opts, State) ->
     State;
 do_insert_expanded([{Id, Key, Hash}|Rest], Opts, State=#state{trees=Trees}) ->
-    State2 = 
+    State2 =
     case orddict:find(Id, Trees) of
         {ok, Tree} ->
             Tree2 = hashtree:insert(Key, Hash, Tree, Opts),
@@ -857,7 +866,7 @@ build_or_rehash(Self, Locked, Type, #state{index=Index, trees=Trees}) ->
         {true, build} ->
             lager:debug("Starting build: ~p", [Index]),
             fold_keys(Index, Self, has_index_tree(Trees)),
-            lager:debug("Finished build (a): ~p", [Index]), 
+            lager:debug("Finished build (a): ~p", [Index]),
             gen_server:cast(Self, build_finished);
         {true, rehash} ->
             lager:debug("Starting rehash: ~p", [Index]),

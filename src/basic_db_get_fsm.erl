@@ -149,12 +149,7 @@ finalize(timeout, State=#state{ do_rr       = true,
                                 key         = BKey,
                                 max_acks    = Max,
                                 replies     = Replies}) ->
-    
-    case Max == ?REPLICATION_FACTOR of
-        true  -> lager:debug("GET_FSM: read repair ON");
-        false -> lager:debug("GET_FSM: AAE REPAIR for ~p nodes", [length(Replies)])
-    end,
-    read_repair(BKey, Replies),
+    read_repair(BKey, Replies, Max == ?REPLICATION_FACTOR),
     {stop, normal, State}.
 
 
@@ -167,7 +162,7 @@ handle_event(_Event, _StateName, StateData) ->
 handle_sync_event(_Event, _From, _StateName, StateData) ->
     {stop,badmsg,StateData}.
 
-code_change(_OldVsn, StateName, State, _Extra) -> 
+code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
 
 terminate(_Reason, _SN, _State) ->
@@ -178,16 +173,29 @@ terminate(_Reason, _SN, _State) ->
 %%% Internal Functions
 %%%===================================================================
 
--spec read_repair(bkey(), [{index_node(), dvv:clock()}]) -> ok.
-read_repair(BKey, Replies) ->
+-spec read_repair(bkey(), [{index_node(), dvv:clock()}], boolean()) -> ok.
+read_repair(BKey, Replies, AAE_Repair) ->
+    %% Compute the final DVV.
     FinalDVV = final_dvv_from_replies(Replies),
+    %% Computed what replica nodes have an outdated version of this key.
     OutadedNodes = [IN || {IN,DVV} <- Replies,
                         not ( dvv:equal(FinalDVV, DVV) orelse dvv:less(FinalDVV, DVV) )],
+    %% Maybe update the false positive stats for AAE.
+    case AAE_Repair of
+        false ->
+            length(OutadedNodes)==0 andalso lager:info("GET_FSM: AAE REPAIR for ~p nodes, ~p out. nodes", [length(Replies),length(OutadedNodes)]),
+            [rpc:cast(Node, basic_db_entropy_info, key_repair_complete, [Index, length(OutadedNodes)]) ||
+                {{Index, Node},_} <- Replies];
+        true ->
+            % lager:info("GET_FSM: read repair ON"),
+            ok
+    end,
+    %% Repair the outdated keys.
     basic_db_vnode:repair(OutadedNodes, BKey, FinalDVV),
     ok.
 
 -spec final_dvv_from_replies([index_node()]) -> dvv:clock().
-final_dvv_from_replies(Replies) -> 
+final_dvv_from_replies(Replies) ->
     DVVs = [DVV || {_,DVV} <- Replies],
     dvv:sync(DVVs).
 

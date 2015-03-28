@@ -1,7 +1,7 @@
 %% -*- erlang -*-
 {application, basic_db,
  [
-  {description, "DottedDB:  a Distributed Key-Value Store with Global Logical Clocks"},
+  {description, "BasicDB: a Distributed Key-Value Store similar to Riak/Dynamo"},
   {vsn, "0.1.0"},
   {registered, []},
   {applications, [

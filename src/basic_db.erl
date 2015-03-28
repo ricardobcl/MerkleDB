@@ -143,7 +143,7 @@ sanitize_options_get(Options) when is_list(Options) ->
     %% Unfolds all occurrences of atoms in Options to tuples {Atom, true}.
     Options1 = proplists:unfold(Options),
     %% Default read repair to true.
-    DoReadRepair = proplists:get_value(?OPT_DO_RR, Options1, true),
+    DoReadRepair = proplists:get_value(?OPT_DO_RR, Options1, false),
     %% Default number of required replicas keys received to 2.
     ReplicasResponses = proplists:get_value(?OPT_READ_MIN_ACKS, Options1, 2),
     Options2 = proplists:delete(?OPT_DO_RR, Options1),
@@ -276,7 +276,13 @@ sanitize_options_put(Options) when is_list(Options) ->
     %% Unfolds all occurrences of atoms in Options to tuples {Atom, true}.
     Options1 = proplists:unfold(Options),
     %% Default number of replica nodes contacted to the replication factor.
-    ReplicataNodes = proplists:get_value(?OPT_PUT_REPLICAS, Options1, ?REPLICATION_FACTOR-1),
+    <<A:32, B:32, C:32>> = crypto:rand_bytes(12),
+    random:seed({A,B,C}),
+    RF = case random:uniform() > ?ALL_REPLICAS_WRITE_RATIO of
+        true  -> ?REPLICATION_FACTOR-1; %% Don't replicate to 1 replica node.
+        false -> ?REPLICATION_FACTOR %% Replicate to all.
+    end,
+    ReplicataNodes = proplists:get_value(?OPT_PUT_REPLICAS, Options1, RF),
     %% Default number of acks from replica nodes to 2.
     ReplicasResponses = proplists:get_value(?OPT_PUT_MIN_ACKS, Options1, 2),
     Options2 = proplists:delete(?OPT_PUT_REPLICAS, Options1),
@@ -299,7 +305,7 @@ aae_status() ->
     io:format("~n"),
     aae_repair_status(ExchangeInfo).
 
-aae_exchange_status(ExchangeInfo) -> 
+aae_exchange_status(ExchangeInfo) ->
     io:format("~s~n", [string:centre(" Exchanges ", 79, $=)]),
     io:format("~-49s  ~-12s  ~-12s~n", ["Index", "Last (ago)", "All (ago)"]),
     io:format("~79..-s~n", [""]),
@@ -325,21 +331,28 @@ aae_tree_status(TreeInfo) ->
     ok.
 
 aae_repair_status(ExchangeInfo) ->
-    io:format("~s~n", [string:centre(" Keys Repaired ", 89, $=)]),
-    io:format("~-49s  ~s  ~s  ~s  ~s~n", ["Index",
+    io:format("~s~n", [string:centre(" Keys Repaired ", 109, $=)]),
+    io:format("~-49s  ~s  ~s  ~s  ~s  ~s  ~s~n", ["Index",
                                       string:centre("Last", 8),
                                       string:centre("Mean", 8),
                                       string:centre("Max", 8),
-                                      string:centre("Sum", 8)]),
-    io:format("~89..-s~n", [""]),
+                                      string:centre("Sum", 8),
+                                      string:centre("Total", 8),
+                                      string:centre("Succ(%)", 8)]),
+    io:format("~109..-s~n", [""]),
     _ = [begin
-         io:format("~-49b  ~s  ~s  ~s  ~s~n", [Index,
+         [TotalRate2] = io_lib:format("~.3f",[TotalRate*100]),
+         io:format("~-49b  ~s  ~s  ~s  ~s  ~s  ~s  ~s  ~s~n", [Index,
                                            string:centre(integer_to_list(Last), 8),
                                            string:centre(integer_to_list(Mean), 8),
                                            string:centre(integer_to_list(Max), 8),
-                                           string:centre(integer_to_list(Sum), 8)]),
+                                           string:centre(integer_to_list(Sum), 8),
+                                           string:centre(integer_to_list(Total), 8),
+                                           string:centre(TotalRate2++" %", 8),
+                                           string:centre(integer_to_list(FP), 8),
+                                           string:centre(integer_to_list(TP), 8)]),
          ok
-     end || {Index, _, _, {Last,_Min,Max,Mean,Sum}} <- ExchangeInfo],
+     end || {Index, _, _, {Last,_Min,Max,Mean,Sum,{FP,TP,_FPRate,Total,TotalRate}}} <- ExchangeInfo],
     ok.
 
 format_timestamp(_Now, undefined) ->
@@ -360,7 +373,7 @@ test(N) ->
               'basic_db3@127.0.0.1','basic_db4@127.0.0.1'],
     Res = [new_client(Node) || Node <- Nodes],
     Clients = [C || {ok, C} <- Res],
-    F = fun() -> 
+    F = fun() ->
         _Client = basic_db_utils:random_from_list(Clients)
         % ok = sync_at_node(Client)
         % io:format("\t Client:   \t ~p\n",[Client])
@@ -445,7 +458,7 @@ process_vnode_state({Index, _Node, {ok,{state, _Id, Index, NodeClock, _Storage,
     % ?PRINT(NodeClock),
     MissingDots = [ miss_dots(Entry) || {_,Entry} <- NodeClock ],
     {Keys, Size} = KeyLog,
-    #{   
+    #{
           dots          => average(MissingDots)
         , clock_size    => byte_size(term_to_binary(NodeClock))
         , keys          => Keys %length(Keys)

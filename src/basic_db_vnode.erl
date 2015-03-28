@@ -54,10 +54,6 @@
 -type state() :: #state{}.
 
 -define(MASTER, basic_db_vnode_master).
-% save vnode state every 100 updates
--define(UPDATE_LIMITE, 100).
--define(VNODE_STATE_FILE, "basic_db_vnode_state").
--define(VNODE_STATE_KEY, "basic_db_vnode_state_key").
 
 %%%===================================================================
 %%% API
@@ -116,7 +112,7 @@ request_hashtree_pid(Partition, Sender) ->
                                    Sender,
                                    ?MASTER).
 
-%% Used by {@link riak_kv_exchange_fsm} to force a vnode to update the hashtree
+%% Used by {@link basic_db_exchange_fsm} to force a vnode to update the hashtree
 %% for repaired keys. Typically, repairing keys will trigger read repair that
 %% will update the AAE hash in the write path. However, if the AAE tree is
 %% divergent from the KV data, it is possible that AAE will try to repair keys
@@ -159,10 +155,10 @@ init([Index]) ->
 handle_command({read, ReqID, BKey}, _Sender, State) ->
     Response =
         case basic_db_storage:get(State#state.storage, BKey) of
-            {error, not_found} -> 
+            {error, not_found} ->
                 % there is no key K in this node
                 not_found;
-            {error, Error} -> 
+            {error, Error} ->
                 % some unexpected error
                 lager:error("Error reading a key from storage (command read): ~p", [Error]),
                 % return the error
@@ -272,11 +268,11 @@ handle_command({hashtree_pid, Node}, _, State=#state{hashtrees=HT}) ->
     end;
 handle_command({rehash, BKey}, _, State) ->
     case basic_db_storage:get(State#state.storage, BKey) of
-        {error, not_found} -> 
+        {error, not_found} ->
             %% Make sure hashtree isn't tracking deleted data
             lager:debug("Rehash Key: key not found -> delete hash"),
             delete_from_hashtree(BKey, State);
-        {error, Error} -> 
+        {error, Error} ->
             % some unexpected error
             lager:error("Error reading a key from storage (guaranteed GET): ~p", [Error]);
         DVV ->
@@ -308,7 +304,7 @@ handle_command(Message, _Sender, State) ->
 
 
 %%%===================================================================
-%%% Coverage 
+%%% Coverage
 %%%===================================================================
 
 handle_coverage(vnode_state, _KeySpaces, {_, RefId, _}, State) ->
@@ -328,7 +324,7 @@ handle_coverage(Req, _KeySpaces, _Sender, State) ->
 
 
 %%%===================================================================
-%%% Info 
+%%% Info
 %%%===================================================================
 
 
@@ -354,7 +350,7 @@ handle_info({'DOWN', _, _, _, _}, State) ->
     {ok, State}.
 
 %%%===================================================================
-%%% HANDOFF 
+%%% HANDOFF
 %%%===================================================================
 
 handle_handoff_command(?FOLD_REQ{foldfun=FoldFun, acc0=Acc0}, _Sender, State) ->
@@ -412,20 +408,20 @@ terminate(_Reason, State) ->
 %% Private
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-% @doc Returns the value (DVV) associated with the Key. 
-% If the key does not exists or for some reason, the storage returns an 
+% @doc Returns the value (DVV) associated with the Key.
+% If the key does not exists or for some reason, the storage returns an
 % error, return an empty DVV.
 guaranteed_get(BKey, State) ->
     case basic_db_storage:get(State#state.storage, BKey) of
-        {error, not_found} -> 
+        {error, not_found} ->
             % there is no key K in this node
             dvv:new();
-        {error, Error} -> 
+        {error, Error} ->
             % some unexpected error
             lager:error("Error reading a key from storage (guaranteed GET): ~p", [Error]),
             % assume that the key was lost, i.e. it's equal to not_found
             dvv:new();
-        DVV -> 
+        DVV ->
             % get the local object
             DVV
     end.
@@ -433,7 +429,7 @@ guaranteed_get(BKey, State) ->
 
 % @doc Returns the Storage for this vnode.
 open_storage(Index) ->
-    % get the preferred backend in the configuration file, defaulting to ETS if 
+    % get the preferred backend in the configuration file, defaulting to ETS if
     % there is no preference.
     Backend = case app_helper:get_env(basic_db, storage_backend) of
         leveldb     -> {backend, leveldb};

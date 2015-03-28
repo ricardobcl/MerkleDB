@@ -15,6 +15,8 @@
 %% States
 -export([prepare/2, write/2, waiting_coordinator/2, waiting_replicas/2]).
 
+-type operation() :: ?WRITE_OP | ?DELETE_OP.
+
 -record(state, {
     req_id          :: pos_integer(),
     from            :: pid(),
@@ -43,8 +45,6 @@
     %% The options proplist.
     options         :: list() % proplist()
 }).
-
--type operation() :: ?WRITE_OP | ?DELETE_OP.
 
 %%%===================================================================
 %%% API
@@ -196,7 +196,7 @@ handle_event(_Event, _StateName, StateData) ->
 handle_sync_event(_Event, _From, _StateName, StateData) ->
     {stop,badmsg,StateData}.
 
-code_change(_OldVsn, StateName, State, _Extra) -> 
+code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
 
 terminate(_Reason, _SN, _SD) ->
