@@ -193,6 +193,10 @@ key_exchange(timeout, State=#state{local=LocalVN,
                              Size = byte_size(term_to_binary(Result)),
                              Size2 = basic_db_utils:human_filesize(Size),
                              lager:info("Bucket: ~p   Level: ~p   E.bytes: ~s~n", [Bucket, Level, Size2]),
+                             {LocalIdx, _LocalNode} = LocalVN,
+                             {RemoteIdx, RemoteNode} = RemoteVN,
+                             basic_db_entropy_info:exchange_total(LocalIdx, 0, Size),
+                             rpc:cast(RemoteNode, basic_db_entropy_info, exchange_total, [RemoteIdx, 0, Size]),
                              Result
                      end;
                 (key_hashes, Segment) ->
@@ -207,9 +211,9 @@ key_exchange(timeout, State=#state{local=LocalVN,
                              lager:info("Seg: ~p   #Keys: ~p   E.bytes: ~s   BytesPerKVHash: ~.1f B~n", [Segment, NumberKVs, Size2, BytesPerKVHash]),
                              {LocalIdx, _LocalNode} = LocalVN,
                              {RemoteIdx, RemoteNode} = RemoteVN,
-                             basic_db_entropy_info:exchange_total(LocalIdx, NumberKVs),
+                             basic_db_entropy_info:exchange_total(LocalIdx, NumberKVs, Size),
                             %  rpc:cast(LocalNode, basic_db_entropy_info, exchange_total, [LocalIdx, NumberKVs]),
-                             rpc:cast(RemoteNode, basic_db_entropy_info, exchange_total, [RemoteIdx, NumberKVs]),
+                             rpc:cast(RemoteNode, basic_db_entropy_info, exchange_total, [RemoteIdx, NumberKVs, Size]),
                             %  basic_db_entropy_info:exchange_total(RemoteIdx, NumberKVs),
                              Result
                      end;

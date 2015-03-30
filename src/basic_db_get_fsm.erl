@@ -183,8 +183,10 @@ read_repair(BKey, Replies, AAE_Repair) ->
     %% Maybe update the false positive stats for AAE.
     case AAE_Repair of
         false ->
-            length(OutadedNodes)==0 andalso lager:info("GET_FSM: AAE REPAIR for ~p nodes, ~p out. nodes", [length(Replies),length(OutadedNodes)]),
-            [rpc:cast(Node, basic_db_entropy_info, key_repair_complete, [Index, length(OutadedNodes)]) ||
+            length(OutadedNodes)==0 andalso
+                lager:info("GET_FSM: AAE REPAIR for ~p nodes, ~p out. nodes", [length(Replies),length(OutadedNodes)]),
+            ClockSize = byte_size(term_to_binary(FinalDVV)),
+            [rpc:cast(Node, basic_db_entropy_info, key_repair_complete, [Index, length(OutadedNodes), ClockSize]) ||
                 {{Index, Node},_} <- Replies];
         true ->
             % lager:info("GET_FSM: read repair ON"),

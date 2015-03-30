@@ -331,28 +331,34 @@ aae_tree_status(TreeInfo) ->
     ok.
 
 aae_repair_status(ExchangeInfo) ->
-    io:format("~s~n", [string:centre(" Keys Repaired ", 109, $=)]),
-    io:format("~-49s  ~s  ~s  ~s  ~s  ~s  ~s~n", ["Index",
+    io:format("~s~n", [string:centre(" Keys Repaired ", 129, $=)]),
+    io:format("~-49s  ~s  ~s  ~s  ~s  ~s  ~s  ~s  ~s~n", ["Index",
                                       string:centre("Last", 8),
                                       string:centre("Mean", 8),
                                       string:centre("Max", 8),
                                       string:centre("Sum", 8),
                                       string:centre("Total", 8),
-                                      string:centre("Succ(%)", 8)]),
-    io:format("~109..-s~n", [""]),
+                                      string:centre("Succ(%)", 8),
+                                      string:centre("FPSize", 8),
+                                      string:centre("TPSize", 8)]),
+    io:format("~129..-s~n", [""]),
     _ = [begin
          [TotalRate2] = io_lib:format("~.3f",[TotalRate*100]),
-         io:format("~-49b  ~s  ~s  ~s  ~s  ~s  ~s  ~s  ~s~n", [Index,
+         FPSize2 = basic_db_utils:human_filesize(FPSize),
+         TPSize2 = basic_db_utils:human_filesize(TPSize),
+         io:format("~-49b  ~s  ~s  ~s  ~s  ~s  ~s  ~s  ~s  ~s  ~s~n", [Index,
                                            string:centre(integer_to_list(Last), 8),
                                            string:centre(integer_to_list(Mean), 8),
                                            string:centre(integer_to_list(Max), 8),
                                            string:centre(integer_to_list(Sum), 8),
                                            string:centre(integer_to_list(Total), 8),
                                            string:centre(TotalRate2++" %", 8),
+                                           string:centre(FPSize2, 8),
+                                           string:centre(TPSize2, 8),
                                            string:centre(integer_to_list(FP), 8),
                                            string:centre(integer_to_list(TP), 8)]),
          ok
-     end || {Index, _, _, {Last,_Min,Max,Mean,Sum,{FP,TP,_FPRate,Total,TotalRate}}} <- ExchangeInfo],
+     end || {Index, _, _, {Last,_Min,Max,Mean,Sum,{FP,TP,_FPRate,Total,TotalRate,FPSize,TPSize}}} <- ExchangeInfo],
     ok.
 
 format_timestamp(_Now, undefined) ->
