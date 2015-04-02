@@ -27,7 +27,7 @@ init(_Args) ->
                   {riak_core_vnode_master, start_link, [basic_db_vnode]},
                   permanent, 5000, worker, [riak_core_vnode_master]},
 
-    
+
     WriteFSMs = {basic_db_put_fsm_sup,
                  {basic_db_put_fsm_sup, start_link, []},
                  permanent, infinity, supervisor, [basic_db_put_fsm_sup]},
@@ -35,10 +35,6 @@ init(_Args) ->
     GetFSMs = {basic_db_get_fsm_sup,
                {basic_db_get_fsm_sup, start_link, []},
                permanent, infinity, supervisor, [basic_db_get_fsm_sup]},
-
-    SyncFSMs = {basic_db_sync_fsm_sup,
-               {basic_db_sync_fsm_sup, start_link, []},
-               permanent, infinity, supervisor, [basic_db_sync_fsm_sup]},
 
     CoverageFSMs = {basic_db_coverage_fsm_sup,
                     {basic_db_coverage_fsm_sup, start_link, []},
@@ -50,4 +46,4 @@ init(_Args) ->
 
     { ok,
         { {one_for_one, 5, 10},
-          [VMaster, WriteFSMs, GetFSMs, SyncFSMs, CoverageFSMs, EntropyManager]}}.
+          [VMaster, WriteFSMs, GetFSMs, CoverageFSMs, EntropyManager]}}.

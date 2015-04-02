@@ -11,8 +11,8 @@
 
 %% Options for AAE.
 -define(DEFAULT_HASHTREE_TOKENS, 90).
--define(TICK, 3000).
--define(MTREE_CHILDREN, 5). % (MTREE_CHILDREN ^ 2) leafs
+-define(TICK, 2000).
+-define(MTREE_CHILDREN, 6). % (MTREE_CHILDREN ^ 2) leafs
 
 %% Options for read requests.
 -define(OPT_DO_RR, do_read_repair).
@@ -22,7 +22,7 @@
 %% Options for put/delete requests.
 -define(OPT_PUT_REPLICAS, put_replicas).
 -define(OPT_PUT_MIN_ACKS, put_acks).
--define(ALL_REPLICAS_WRITE_RATIO, 0.0). % 85% of put/deletes go to all replica nodes
+-define(ALL_REPLICAS_WRITE_RATIO, 0.9). % 85% of put/deletes go to all replica nodes
 
 -define(OPT_TIMEOUT, opt_timeout).
 

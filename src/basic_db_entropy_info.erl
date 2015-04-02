@@ -94,9 +94,9 @@ exchange_complete(Type, Index, RemoteIdx, IndexN, Repaired) ->
     update_index_info({Type, Index},
                       {exchange_complete, RemoteIdx, IndexN, Repaired}).
 
--spec key_repair_complete(index(), DivergentKeys :: non_neg_integer(), non_neg_integer()) -> ok.
-key_repair_complete(LocalIdx, DivergentKeys, Size) ->
-          update_index_info({basic_db, LocalIdx}, {key_repair_complete, DivergentKeys, Size}).
+-spec key_repair_complete(index(), DivergentKeys :: non_neg_integer(), {non_neg_integer(), non_neg_integer()}) -> ok.
+key_repair_complete(LocalIdx, DivergentKeys, {PayloadSize,MetaSize}) ->
+          update_index_info({basic_db, LocalIdx}, {key_repair_complete, DivergentKeys, {PayloadSize,MetaSize}}).
 
 
 -spec exchange_total(index(), Total :: non_neg_integer(), non_neg_integer()) -> ok.
@@ -132,6 +132,7 @@ compute_exchange_info(Type, {M,F}) ->
     filter_index_info(),
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     Indices = riak_core_ring:my_indices(Ring),
+    % Indices = [ I || {I,_Owner} <- riak_core_ring:all_owners(Ring) ],
     Defaults = [{Index, undefined, undefined, undefined} || Index <- Indices],
     KnownInfo = [compute_exchange_info({M,F}, Ring, Index, Info)
                  || {{Type2, Index}, Info} <- all_index_info(), Type2 == Type],
@@ -215,8 +216,8 @@ handle_index_info({exchange_complete, RemoteIdx, IndexN, Repaired}, Info) ->
                     repaired=RepairStat,
                     last_exchange=ExId};
 
-handle_index_info({key_repair_complete, DivergentKeys, Size}, Info) ->
-    RepairStat = update_simple_stat_repair(DivergentKeys, Size, Info#index_info.repaired),
+handle_index_info({key_repair_complete, DivergentKeys, {PayloadSize,MetaSize}}, Info) ->
+    RepairStat = update_simple_stat_repair(DivergentKeys, {PayloadSize,MetaSize}, Info#index_info.repaired),
     Info#index_info{repaired=RepairStat};
 
 handle_index_info({exchange_total, Total, Size}, Info) ->
@@ -258,18 +259,19 @@ update_simple_stat(Value, Stat=#simple_stat{max=Max, min=Min, sum=Sum, count=Cnt
                      sum   = Sum+Value,
                      count = Cnt+1}.
 
-update_simple_stat_repair(0, Size, SS) -> %% False positive AAE repair (between 2 keys)
+update_simple_stat_repair(0, _Size, SS) -> %% False positive AAE repair (between 2 keys)
     SS2                    = init_simple_stat(SS),
     FalsePositives         = SS2#simple_stat.fp + 1,
-    FalsePositivesSize     = SS2#simple_stat.fp_size + Size,
-    SS2#simple_stat{fp     = FalsePositives, fp_size=FalsePositivesSize};
-update_simple_stat_repair(DivergentKeys, Size, SS) when DivergentKeys > 0 -> %% True positive AAE repair (between 2 keys)
+    % FalsePositivesSize     = SS2#simple_stat.fp_size + Size,
+    SS2#simple_stat{fp     = FalsePositives};
+update_simple_stat_repair(DivergentKeys, {PayloadSize,MetaSize}, SS) when DivergentKeys > 0 -> %% True positive AAE repair (between 2 keys)
     SS2                    = init_simple_stat(SS),
-    TruePositives          = SS2#simple_stat.tp + 1,
-    TruePositivesSize      = SS2#simple_stat.tp_size + Size,
-    SS2#simple_stat{tp     = TruePositives, tp_size=TruePositivesSize}.
+    TruePositives          = SS2#simple_stat.tp + DivergentKeys,
+    TruePositivesSize      = SS2#simple_stat.tp_size + PayloadSize,
+    FalsePositivesSize     = SS2#simple_stat.fp_size + MetaSize,
+    SS2#simple_stat{tp     = TruePositives, tp_size=TruePositivesSize, fp_size=FalsePositivesSize}.
 
-update_simple_stat_total(Total, Size, SS) -> %% False positive AAE repair (between 2 keys)
+update_simple_stat_total(Total, Size, SS) ->
     SS2                    = init_simple_stat(SS),
     Total2                 = SS2#simple_stat.total + Total,
     FalsePositivesSize     = SS2#simple_stat.fp_size + Size,
@@ -284,7 +286,7 @@ stat_tuple(undefined) ->
     undefined;
 stat_tuple(#simple_stat{last=Last, max=Max, min=Min, sum=Sum, count=Cnt,
                         fp=FP, tp=TP, total=Total, tp_size=TPSize, fp_size=FPSize}) ->
-    FPRate    = FP / max(1, (FP+TP)),
+    FPRate    = FP / max(1, (FP+TP)),%wrong
     TotalRate = TP / max(1, Total),
     Mean      = Sum div max(1, Cnt),
     {Last, Min, Max, Mean, Sum, {FP, TP, FPRate, Total, TotalRate, FPSize, TPSize}}.

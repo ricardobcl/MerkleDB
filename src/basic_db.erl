@@ -30,10 +30,7 @@
         ]).
 
 %% Used for printing AAE status.
--export([aae_status/0,
-         aae_exchange_status/1,
-         aae_repair_status/1,
-         aae_tree_status/1]).
+-export([aae_status/0]).
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -336,11 +333,11 @@ aae_repair_status(ExchangeInfo) ->
                                       string:centre("Last", 8),
                                       string:centre("Mean", 8),
                                       string:centre("Max", 8),
-                                      string:centre("Sum", 8),
+                                      string:centre("Hits", 8),
                                       string:centre("Total", 8),
-                                      string:centre("Succ(%)", 8),
-                                      string:centre("FPSize", 8),
-                                      string:centre("TPSize", 8)]),
+                                      string:centre("Hit (%)", 8),
+                                      string:centre("Meta", 8),
+                                      string:centre("Payload", 8)]),
     io:format("~129..-s~n", [""]),
     _ = [begin
          [TotalRate2] = io_lib:format("~.3f",[TotalRate*100]),
@@ -359,7 +356,35 @@ aae_repair_status(ExchangeInfo) ->
                                            string:centre(integer_to_list(TP), 8)]),
          ok
      end || {Index, _, _, {Last,_Min,Max,Mean,Sum,{FP,TP,_FPRate,Total,TotalRate,FPSize,TPSize}}} <- ExchangeInfo],
+
+    {SumA, TotalA, TotalRateA, FPSizeA, TPSizeA} = average_exchange_info(ExchangeInfo),
+    [TotalRateA2]   = io_lib:format("~.3f",[TotalRateA*100]),
+    [SumA2]         = io_lib:format("~.3f",[SumA]),
+    [TotalA2]       = io_lib:format("~.3f",[TotalA]),
+    FPSizeA2        = basic_db_utils:human_filesize(FPSizeA),
+    TPSizeA2        = basic_db_utils:human_filesize(TPSizeA),
+    io:format("~-49s  ~s  ~s  ~s  ~s  ~s  ~s  ~s  ~s~n", ["all",
+                                      string:centre("", 8),
+                                      string:centre("", 8),
+                                      string:centre("", 8),
+                                      string:centre(SumA2, 8),
+                                      string:centre(TotalA2, 8),
+                                      string:centre(TotalRateA2++" %", 8),
+                                      string:centre(FPSizeA2, 8),
+                                      string:centre(TPSizeA2, 8)]),
     ok.
+
+average_exchange_info(ExchangeInfo) ->
+    ExchangeInfo2 = [E || E={_,_,_,S} <- ExchangeInfo, S =/= undefined],
+    FoldFun = 
+        fun ({_, _, _, {_,_,_,_,Sum,{_,_,_,Total,TotalRate,FPSize,TPSize}}}, 
+                _Acc={Sum2, Total2, TotalRate2, FPSize2, TPSize2}) ->
+            {Sum+Sum2, Total+Total2, TotalRate+TotalRate2, FPSize+FPSize2, TPSize+TPSize2}
+        end,
+    {Sum, Total, TotalRate, FPSize, TPSize} = lists:foldl(FoldFun, {0,0,0,0,0}, ExchangeInfo2),
+    L = max(1, length(ExchangeInfo2)),
+    {Sum/L, Total/L, TotalRate/L, FPSize/L, TPSize/L}.
+
 
 format_timestamp(_Now, undefined) ->
     "--";

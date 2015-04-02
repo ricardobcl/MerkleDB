@@ -14,9 +14,6 @@ start(_StartType, _StartArgs) ->
         {ok, Pid} ->
             % application:set_env(riak_core, ring_creation_size, 16),
 
-            {ok,_} = basic_db_stats:start_link([{histogram, bvv_size}]),
-            % basic_db_stats:add_stats([{histogram, kl_len}]),
-
             ok = riak_core:register([{vnode_module, basic_db_vnode}]),
 
             % ok = riak_core_ring_events:add_guarded_handler(basic_db_ring_event_handler, []),
