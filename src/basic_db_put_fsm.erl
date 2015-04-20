@@ -108,7 +108,7 @@ prepare(timeout, State=#state{  req_id      = ReqID,
         [_] -> % this is a replica node, thus can coordinate write/delete
             {next_state, write, State#state{coordinator=Coordinator}, 0};
         _   -> % same as above, but multiple vnodes, so choose one
-            Coordinator2 = dotted_db_utils:random_from_list(Coordinator),
+            Coordinator2 = basic_db_utils:random_from_list(Coordinator),
             {next_state, write, State#state{coordinator=[Coordinator2]}, 0}
     end.
 

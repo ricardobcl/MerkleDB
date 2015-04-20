@@ -62,7 +62,7 @@ vstates() ->
 
 
 %% @doc Returns a pair with this module name and the local node().
-%% It can be used by client apps to connect to a DottedDB node and execute commands.
+%% It can be used by client apps to connect to a BasicDB node and execute commands.
 new_client() ->
     new_client(node()).
 new_client(Node) ->
