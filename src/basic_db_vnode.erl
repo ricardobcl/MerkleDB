@@ -176,21 +176,23 @@ handle_command({read, ReqID, BKey}, _Sender, State) ->
     {reply, {ok, ReqID, IndexNode, Response}, State};
 
 
-handle_command({repair, BKey, NewDVV}, _Sender, State) ->
-    % get the local DVV
-    DiskDVV = guaranteed_get(BKey, State),
-    % synchronize both objects
-    FinalDVV = dvv:sync(NewDVV, DiskDVV),
-    % save the new DVV
-    ok = basic_db_storage:put(State#state.storage, BKey, FinalDVV),
-    % update the hashtree with the new dvv
-    update_hashtree(BKey, FinalDVV, State),
-    % Optionally collect stats
-    case State#state.stats of
-        true -> ok;
-        false -> ok
-    end,
-    {noreply, State};
+handle_command({repair, BKey, NewDVV}, Sender, State) ->
+    % % get the local DVV
+    % DiskDVV = guaranteed_get(BKey, State),
+    % % synchronize both objects
+    % FinalDVV = dvv:sync(NewDVV, DiskDVV),
+    % % save the new DVV
+    % ok = basic_db_storage:put(State#state.storage, BKey, FinalDVV),
+    % % update the hashtree with the new dvv
+    % update_hashtree(BKey, FinalDVV, State),
+    % % Optionally collect stats
+    % case State#state.stats of
+    %     true -> ok;
+    %     false -> ok
+    % end,
+    {reply, {ok, dummy_req_id}, State2} = 
+        handle_command({replicate, dummy_req_id, BKey, NewDVV}, Sender, State),
+    {noreply, State2};
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -358,7 +360,32 @@ handle_handoff_command(?FOLD_REQ{foldfun=FoldFun, acc0=Acc0}, _Sender, State) ->
     % and our storage layer expect 2 elements ({K,V},Acc).
     WrapperFun = fun({BKey,Val}, Acc) -> FoldFun(BKey, Val, Acc) end,
     Acc = basic_db_storage:fold(State#state.storage, WrapperFun, Acc0),
-    {reply, Acc, State}.
+    {reply, Acc, State};
+
+handle_handoff_command(Cmd, Sender, State) when 
+        element(1, Cmd) == replicate orelse 
+        element(1, Cmd) == repair ->
+    case handle_command(Cmd, Sender, State) of
+        {noreply, State2} ->
+            {forward, State2};
+        {reply, {ok,_}, State2} ->
+            {forward, State2}
+    end;
+
+%% For coordinating writes, do it locally and forward the replication
+handle_handoff_command(Cmd={write, ReqID, _, Key, _, _}, Sender, State) ->
+    % do the local coordinating write
+    {reply, {ok, ReqID, NewDVV}, State2} = handle_command(Cmd, Sender, State),
+    % send the ack to the PUT_FSM
+    riak_core_vnode:reply(Sender, {ok, ReqID, NewDVV}),
+    % create a new request to forward the replication of this new DCC/object
+    NewCommand = {replicate, ReqID, Key, NewDVV},
+    {forward, NewCommand, State2};
+
+%% Handle all other commands locally (only gets?)
+handle_handoff_command(Cmd, Sender, State) ->
+    lager:info("Handoff command ~p at ~p", [Cmd, State#state.id]),
+    handle_command(Cmd, Sender, State).
 
 handoff_starting(_TargetNode, State) ->
     {true, State}.
@@ -371,10 +398,11 @@ handoff_finished(_TargetNode, State) ->
 
 handle_handoff_data(Data, State) ->
     {BKey, Obj} = basic_db_utils:decode_kv(Data),
-    NewObj = guaranteed_get(BKey, State),
-    FinalObj = dvv:sync(Obj, NewObj),
-    ok = basic_db_storage:put(State#state.storage, BKey, FinalObj),
-    {reply, ok, State}.
+    % NewObj = guaranteed_get(BKey, State),
+    % FinalObj = dvv:sync(Obj, NewObj),
+    % ok = basic_db_storage:put(State#state.storage, BKey, FinalObj),
+    {reply, {ok, _}, State2} = handle_command({replicate, dummy_req_id, BKey, Obj}, undefined, State),
+    {reply, ok, State2}.
 
 encode_handoff_item(BKey, Val) ->
     basic_db_utils:encode_kv({BKey,Val}).
@@ -384,13 +412,20 @@ is_empty(State) ->
     {Bool, State}.
 
 delete(State) ->
+    S = case basic_db_storage:drop(State#state.storage) of
+        {ok, Storage} ->
+            Storage;
+        {error, Reason, Storage} ->
+            lager:warning("Error on destroying storage: ~p",[Reason]),
+            Storage
+    end,
     case State#state.hashtrees of
         undefined ->
             ok;
         HT ->
             basic_db_index_hashtree:destroy(HT)
     end,
-    {ok, State#state{hashtrees=undefined}}.
+    {ok, State#state{hashtrees=undefined, storage=S}}.
 
 % handle_coverage(_Req, _KeySpaces, _Sender, State) ->
 %     {stop, not_implemented, State}.
@@ -442,10 +477,14 @@ open_storage(Index) ->
     {ok, Storage} = basic_db_storage:open(DBName, [Backend]),
     Storage.
 
-% @doc Close the key-value backend, save the vnode state and close the DETS file.
+% @doc Close the key-value backend.
 close_all(undefined) -> ok;
 close_all(_State=#state{storage = Storage} ) ->
-    ok = basic_db_storage:close(Storage).
+    case basic_db_storage:close(Storage) of
+        ok -> ok;
+        {error, Reason} ->
+            lager:warning("Error on closing storage: ~p",[Reason])
+    end.
 
 
 maybe_create_hashtrees(State=#state{index=Index}) ->
@@ -458,12 +497,12 @@ maybe_create_hashtrees(State=#state{index=Index}) ->
                     monitor(process, Trees),
                     State#state{hashtrees=Trees};
                 Error ->
-                    lager:info("dotted_db/~p: unable to start index_hashtree: ~p", [Index, Error]),
+                    lager:info("basic_db/~p: unable to start index_hashtree: ~p", [Index, Error]),
                     erlang:send_after(1000, self(), retry_create_hashtree),
                     State#state{hashtrees=undefined}
             end;
         Type ->
-            lager:debug("dotted_db/~p: not a primary vnode!? It's a ~p vnode!", [Index, Type]),
+            lager:debug("basic_db/~p: not a primary vnode!? It's a ~p vnode!", [Index, Type]),
             State
     end.
 
@@ -513,6 +552,6 @@ get_hashtree_token() ->
 
 -spec max_hashtree_tokens() -> pos_integer().
 max_hashtree_tokens() ->
-    app_helper:get_env(dotted_db,
+    app_helper:get_env(basic_db,
                        anti_entropy_max_async,
                        ?DEFAULT_HASHTREE_TOKENS).
