@@ -73,6 +73,7 @@ end
 
 desc "join basic_db nodes (only needed once)"
 task :join do
+  sleep(2)
   (2..NUM_NODES).each do |n|
       sh %{dev/dev#{n}/bin/basic_db-admin cluster join basic_db1@127.0.0.1} rescue "already joined"
   end
