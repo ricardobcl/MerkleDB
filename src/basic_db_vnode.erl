@@ -228,14 +228,31 @@ handle_command({write, ReqID, Operation, BKey, Value, Context}, _Sender, State) 
 
 
 handle_command({replicate, ReqID, BKey, NewDVV}, _Sender, State) ->
+
+    % debug
+    RN = basic_db_utils:replica_nodes(BKey),
+    This = {State#state.id, node()},
+    case lists:member(This, RN) of
+        true   ->
+            ok;
+        false ->
+            lager:info("(2)IxNd: ~p work vnode for key ~p in ~p", [This, BKey, RN])
+    end,
+
     % get the local DVV
     DiskDVV = guaranteed_get(BKey, State),
     % synchronize both objects
     FinalDVV = dvv:sync(NewDVV, DiskDVV),
-    % save the new DVV
-    ok = basic_db_storage:put(State#state.storage, BKey, FinalDVV),
-    % update the hashtree with the new dvv
-    update_hashtree(BKey, FinalDVV, State),
+    % test if the FinalDCC has newer information
+    case dvv:equal(FinalDVV, DiskDVV) of
+        true ->
+            lager:debug("Replicated object is ignored (already seen)");
+        false ->
+            % save the new DVV
+            ok = basic_db_storage:put(State#state.storage, BKey, FinalDVV),
+            % update the hashtree with the new dvv
+            update_hashtree(BKey, FinalDVV, State)
+    end,
     % Optionally collect stats
     case State#state.stats of
         true -> ok;
