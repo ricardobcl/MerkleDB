@@ -1,7 +1,7 @@
 
 -define(PRINT(Var), io:format("DEBUG: ~p:~p - ~p~n~n ~p~n~n", [?MODULE, ?LINE, ??Var, Var])).
 
--define(DEFAULT_TIMEOUT, 20000).
+-define(DEFAULT_TIMEOUT, 30000).
 -define(REPLICATION_FACTOR, 3).
 % -define(R, 2).
 % -define(W, 2).
@@ -22,7 +22,7 @@
 %% Options for put/delete requests.
 -define(OPT_PUT_REPLICAS, put_replicas).
 -define(OPT_PUT_MIN_ACKS, put_acks).
--define(ALL_REPLICAS_WRITE_RATIO, 0.9). % 85% of put/deletes go to all replica nodes
+-define(ALL_REPLICAS_WRITE_RATIO, 0.0). % x percent of put/deletes go to all replica nodes
 
 -define(OPT_TIMEOUT, opt_timeout).
 
