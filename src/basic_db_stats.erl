@@ -19,8 +19,7 @@
 
 -include_lib("basic_db.hrl").
 
--define(FLUSH_INTERVAL, 10). % 10 seconds
--define(FLUSH_INTERVAL_MS, 10000). % 10000 milliseconds
+-define(FLUSH_INTERVAL, 3). % 3 seconds
 -define(WARN_INTERVAL, 1000). % Warn once a second
 -define(CURRENT_DIR, "current").
 
@@ -230,7 +229,7 @@ process_stats(Now, State) ->
     Window  = timer:now_diff(Now, State#state.last_write_time) / 1000000,
     [begin
          OpAmount = save_histogram(Elapsed, Window, Stat),
-         folsom_metrics_counter:dec({units, Stat}, OpAmount)
+         folsom_metrics:notify({units, Stat}, {dec, OpAmount})
      end || {histogram, Stat} <- State#state.stats].
 
 
@@ -255,7 +254,7 @@ save_histogram(Elapsed, Window, Op) ->
                                   proplists:get_value(max, Stats),
                                   0]);
         false ->
-            lager:warning("No data for op: ~p\n", [Op]),
+            lager:debug("No data for op: ~p\n", [Op]),
             Line = io_lib:format("~w, ~w, 0, 0, 0, 0, 0, 0, 0, 0, 0\n",
                                  [Elapsed,
                                   Window])
@@ -294,7 +293,7 @@ new_dir_name() ->
 create_stat_folsom({counter, Name}) ->
     folsom_metrics:new_counter({counter, Name});
 create_stat_folsom({histogram, Name}) ->
-    folsom_metrics:new_histogram({histogram, Name}, slide, ?FLUSH_INTERVAL_MS),
+    folsom_metrics:new_histogram({histogram, Name}, slide, ?FLUSH_INTERVAL),
     folsom_metrics:new_counter({units, Name}).
 
 %% @doc Create the stats directory and setups the output file handles for dumping 
