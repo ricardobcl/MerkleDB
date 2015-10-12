@@ -26,7 +26,9 @@
          delete_at_node/3,
          delete_at_node/4,
          test/0,
-         test/1
+         test/1,
+         update/1,
+         update/2
         ]).
 
 %% Used for printing AAE status.
@@ -117,7 +119,7 @@ get_at_node(BKey={_Bucket, _Key}, Options, Client) ->
 
 
 %% @doc Make the actual request to a GET FSM at the Target Node.
-do_get(BKey, Options, {?MODULE, TargetNode}) ->
+do_get(BKey={_,_}, Options, {?MODULE, TargetNode}) ->
     ReqID = basic_db_utils:make_request_id(),
     Request = [ ReqID,
                 self(),
@@ -251,7 +253,7 @@ delete_at_node(BKey={_Bucket, _Key}, Context, Options, TargetNode) ->
 
 
 %% @doc Make the actual request to a PUT FSM at the Target Node.
-do_put(BKey, Value, Context, Options, {?MODULE, TargetNode}) ->
+do_put(BKey={_,_}, Value, Context, Options, {?MODULE, TargetNode}) ->
     ReqID = basic_db_utils:make_request_id(),
     Request = [ ReqID,
                 self(),
@@ -435,6 +437,23 @@ test() ->
     % {ok, Stats2} = sync_at_node_debug(Client),
     % basic_db_utils:pp(Stats2),
     ok.
+
+update(Key) ->
+    update(Key, 1).
+
+update(Key, 0) ->
+    {ok, {_Values, Ctx}} = get(Key),
+    Ctx;
+update(Key, N) ->
+    Value = basic_db_utils:make_request_id(),
+    case get(Key) of
+        {not_found, _} ->
+            ok = new(Key, Value);
+        {ok, {_Values, Ctx}} ->
+            ok = put(Key, Value, Ctx)
+    end,
+    update(Key, N-1).
+
 
 
 
