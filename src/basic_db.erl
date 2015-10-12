@@ -418,6 +418,7 @@ test(N) ->
 test() ->
     {not_found, _} = get("random_key"),
     K1 = basic_db_utils:make_request_id(),
+    ?PRINT(K1),
     ok = new(K1,"v1"),
     ok = new("KEY2","vb"),
     ok = new(K1,"v3"),
@@ -534,7 +535,7 @@ average(X) ->
 average([H|T], Length, Sum) ->
     average(T, Length + 1, Sum + H);
 average([], Length, Sum) ->
-    Sum / Length.
+    Sum / max(1,Length)..
 
         % % node id used for in logical clocks
         % id          :: id(),
