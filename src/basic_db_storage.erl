@@ -143,7 +143,7 @@ drop(Engine, RetriesLeft, _) ->
                     timer:sleep(SleepFor),
                     drop(Engine, RetriesLeft - 1, Reason);
                 false ->
-                    {error, Reason}
+                    {error, Reason, Engine}
             end;
         {error, Reason} ->
             {error, Reason, Engine}
