@@ -138,7 +138,7 @@ waiting_coordinator({ok, ReqID, DVV}, State=#state{ req_id      = ReqID,
     % if we have enough write acknowledgments, reply back to the client
     Completed = case Acks + 1 >= MinAcks of
                     true  ->
-                        From ! {ReqID, ok},
+                        From ! {ReqID, ok, update},
                         true;
                     false ->
                         false
