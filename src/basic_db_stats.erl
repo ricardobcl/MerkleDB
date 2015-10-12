@@ -45,36 +45,28 @@ start_link() ->
     start_link([]).
 
 start_link(Stats) ->
-    % gen_server:start_link({global, ?MODULE}, ?MODULE, [Stats], []).
-    global:trans({?MODULE, ?MODULE}, fun() ->
-        case gen_server:start_link({global, ?MODULE}, ?MODULE, [Stats], []) of
-            {ok, Pid} -> 
-                {ok, Pid};
-            {error, {already_started, Pid}} ->  
-                link(Pid),
-                {ok, Pid};
-            Else -> Else
-        end
-    end).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [Stats], []).
+
 
 %% @doc Dynamically adds a list of stats {Type, Name}
 add_stats(NewStats) ->
     ?PRINT(NewStats),
-    gen_server:call({global, ?MODULE}, {add_stats, NewStats}).
+    gen_server:call(?MODULE, {add_stats, NewStats}).
 
+notify(Name, 0.0) -> notify(Name, 0);
 notify(Name, Value) ->
-    gen_server:cast({global, ?MODULE}, {notify, Name, Value}).
+    gen_server:cast(?MODULE, {notify, Name, Value}).
 
 %% @doc Starts the timer that flush the data to disk.
 start() ->
-    gen_server:call({global, ?MODULE}, start).
+    gen_server:call(?MODULE, start).
 
 %% @doc Stops the timer that flush the data to disk.
 stop() ->
-    gen_server:call({global, ?MODULE}, stop).
+    gen_server:call(?MODULE, stop).
 
 new_dir() ->
-    gen_server:call({global, ?MODULE}, new_dir).
+    gen_server:call(?MODULE, new_dir).
 
 
 
@@ -225,8 +217,8 @@ process_stats(Now, State) ->
     %% Determine how much time has elapsed (seconds) since our last report
     %% If zero seconds, round up to one to avoid divide-by-zeros in reporting
     %% tools.
-    Elapsed = timer:now_diff(Now, State#state.start_time) / 1000000,
-    Window  = timer:now_diff(Now, State#state.last_write_time) / 1000000,
+    Elapsed = round(timer:now_diff(Now, State#state.start_time) / 1000000),
+    Window  = round(timer:now_diff(Now, State#state.last_write_time) / 1000000),
     [begin
          OpAmount = save_histogram(Elapsed, Window, Stat),
          folsom_metrics:notify({units, Stat}, {dec, OpAmount})
