@@ -34,6 +34,7 @@
 -type index()      :: non_neg_integer().
 % element of the consistent hashing ring
 -type index_node() :: {index(), node()}.
+-type vnode_id()   :: {index(), pos_integer()}.
 
 -type keylog()     :: {counter(), [key()]}.
 

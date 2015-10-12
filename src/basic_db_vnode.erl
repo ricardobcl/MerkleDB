@@ -21,6 +21,7 @@
         ]).
 
 -export([
+         get_vnode_id/1,
          read/3,
          repair/3,
          write/6,
@@ -35,10 +36,11 @@
              start_vnode/1
              ]).
 
+-type dets()        :: reference().
 
 -record(state, {
         % node id used for in logical clocks
-        id          :: id(),
+        id          :: vnode_id(),
         % index on the consistent hashing ring
         index       :: index(),
         % the current node pid
@@ -47,6 +49,8 @@
         storage     :: basic_db_storage:storage(),
         % server that handles the hashtrees for this vnode
         hashtrees   :: pid(),
+        % DETS table that stores in disk the vnode state
+        dets        :: dets(),
         % a flag to collect or not stats
         stats       :: boolean()
     }).
@@ -54,6 +58,9 @@
 -type state() :: #state{}.
 
 -define(MASTER, basic_db_vnode_master).
+-define(REPORT_TICK_INTERVAL, 1000). % interval between report stats
+-define(VNODE_STATE_FILE, "basic_db_vnode_state").
+-define(VNODE_STATE_KEY, "basic_db_vnode_state_key").
 
 %%%===================================================================
 %%% API
@@ -61,6 +68,12 @@
 
 start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
+
+get_vnode_id(IndexNodes) ->
+    riak_core_vnode_master:command(IndexNodes,
+                                    get_vnode_id,
+                                   {raw, undefined, self()},
+                                   ?MASTER).
 
 
 read(ReplicaNodes, ReqID, BKey) ->
@@ -132,16 +145,47 @@ rehash(Preflist, Bucket, Key) ->
 %%%===================================================================
 
 init([Index]) ->
+    % generate a new vnode ID for now
+    <<A:32, B:32, C:32>> = crypto:rand_bytes(12),
+    random:seed({A,B,C}),
+    % get a random index withing the length of the list
+    NodeId = {Index, random:uniform(999999999999)},
+    % try to read the vnode state in the DETS file, if it exists
+    {Dets, NodeId2} =
+        case read_vnode_state(Index) of
+            {Ref, not_found} -> % there isn't a past vnode state stored
+                lager:debug("No persisted state for vnode index: ~p.",[Index]),
+                {Ref, NodeId};
+            {Ref, error, Error} -> % some unexpected error
+                lager:error("Error reading vnode state from storage: ~p", [Error]),
+                {Ref, NodeId};
+            {Ref, VnodeId} -> % we have vnode state in the storage
+                lager:info("Recovered state for vnode ID: ~p.",[VnodeId]),
+                {Ref, VnodeId}
+        end,
     % open the storage backend for the key-values of this vnode
-    Storage = open_storage(Index),
+    {Storage, NodeId3} =
+        case open_storage(Index) of
+            {{backend, ets}, S} ->
+                % if the storage is in memory, start with an "empty" vnode state
+                {S, NodeId};
+            {_, S} ->
+                {S, NodeId2}
+        end,
+    % create an ETS to store keys written and deleted in this node (for stats)
+    ((ets:info(get_ets_id(NodeId3)) /= undefined) orelse
+        ets:new(get_ets_id(NodeId3), [named_table, public, set, {write_concurrency, false}])),
+    % schedule a periodic reporting message (wait 2 seconds initially)
+    schedule_report(2000),
     % create the state
     State = #state{
         % for now, lets use the index in the consistent hash as the vnode ID
-        id          = Index,
+        id          = NodeId3,
         index       = Index,
         node        = node(),
         storage     = Storage,
         hashtrees   = undefined,
+        dets        = Dets,
         stats       = true
     },
     {ok, maybe_create_hashtrees(State)}.
@@ -177,19 +221,6 @@ handle_command({read, ReqID, BKey}, _Sender, State) ->
 
 
 handle_command({repair, BKey, NewDVV}, Sender, State) ->
-    % % get the local DVV
-    % DiskDVV = guaranteed_get(BKey, State),
-    % % synchronize both objects
-    % FinalDVV = dvv:sync(NewDVV, DiskDVV),
-    % % save the new DVV
-    % ok = basic_db_storage:put(State#state.storage, BKey, FinalDVV),
-    % % update the hashtree with the new dvv
-    % update_hashtree(BKey, FinalDVV, State),
-    % % Optionally collect stats
-    % case State#state.stats of
-    %     true -> ok;
-    %     false -> ok
-    % end,
     {reply, {ok, dummy_req_id}, State2} = 
         handle_command({replicate, dummy_req_id, BKey, NewDVV}, Sender, State),
     {noreply, State2};
@@ -200,6 +231,17 @@ handle_command({repair, BKey, NewDVV}, Sender, State) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 handle_command({write, ReqID, Operation, BKey, Value, Context}, _Sender, State) ->
+
+    % debug
+    RN = basic_db_utils:replica_nodes(BKey),
+    This = {State#state.id, node()},
+    case lists:member(This, RN) of
+        true   ->
+            ok;
+        false ->
+            lager:info("(2)IxNd: ~p work vnode for key ~p in ~p", [This, BKey, RN])
+    end,
+
     % get and fill the causal history of the local key
     DiskDVV = guaranteed_get(BKey, State),
     % test if this is a delete; if not, add dot-value to the DVV container
@@ -214,7 +256,7 @@ handle_command({write, ReqID, Operation, BKey, Value, Context}, _Sender, State) 
                 dvv:update(ClientDVV, DiskDVV, State#state.id)
         end,
     % store the DVV
-    ok = basic_db_storage:put(State#state.storage, BKey, NewDVV),
+    save_kv(BKey, NewDVV, State),
     % update the hashtree with the new dvv
     update_hashtree(BKey, NewDVV, State),
     % maybe_cache_object(BKey, Obj, State),
@@ -249,7 +291,7 @@ handle_command({replicate, ReqID, BKey, NewDVV}, _Sender, State) ->
             lager:debug("Replicated object is ignored (already seen)");
         false ->
             % save the new DVV
-            ok = basic_db_storage:put(State#state.storage, BKey, FinalDVV),
+            save_kv(BKey, FinalDVV, State),
             % update the hashtree with the new dvv
             update_hashtree(BKey, FinalDVV, State)
     end,
@@ -317,8 +359,11 @@ handle_command(?FOLD_REQ{foldfun=FoldFun, acc0=Acc0,
     Acc = basic_db_storage:fold(State#state.storage, WrapperFun, Acc0),
     {reply, Acc, State};
 
+handle_command(get_vnode_id, _Sender, State) ->
+    {reply, {get_vnode_id, {State#state.index, node()}, State#state.id}, State};
+
 handle_command(Message, _Sender, State) ->
-    lager:warning({unhandled_command, Message}),
+    lager:info({unhandled_command, Message}),
     {noreply, State}.
 
 
@@ -338,7 +383,7 @@ handle_coverage(vnode_state, _KeySpaces, {_, RefId, _}, State) ->
 %     {reply, {RefId, {ok, Users}}, State};
 
 handle_coverage(Req, _KeySpaces, _Sender, State) ->
-    lager:warning("unknown coverage received ~p", [Req]),
+    lager:info("unknown coverage received ~p", [Req]),
     {noreply, State}.
 
 
@@ -360,13 +405,23 @@ handle_info(retry_create_hashtree, State=#state{hashtrees=undefined}) ->
 handle_info(retry_create_hashtree, State) ->
     {ok, State};
 
+%% Report Tick
+handle_info(report_tick, State) ->
+    State1 = maybe_tick(State),
+    {ok, State1};
+
 handle_info({'DOWN', _, _, Pid, _}, State=#state{hashtrees=Pid}) ->
     State2 = State#state{hashtrees=undefined},
     State3 = maybe_create_hashtrees(State2),
     {ok, State3};
 
 handle_info({'DOWN', _, _, _, _}, State) ->
+    {ok, State};
+
+handle_info(Info, State) ->
+    lager:info("unhandled_info: ~p",[Info]),
     {ok, State}.
+
 
 %%%===================================================================
 %%% HANDOFF
@@ -425,15 +480,20 @@ encode_handoff_item(BKey, Val) ->
     basic_db_utils:encode_kv({BKey,Val}).
 
 is_empty(State) ->
-    Bool = basic_db_storage:is_empty(State#state.storage),
-    {Bool, State}.
+    case basic_db_storage:is_empty(State#state.storage) of
+        true ->
+            {true, State};
+        false ->
+            lager:info("IS_EMPTY: not empty -> {~p, ~p}",[State#state.index, node()]),
+            {false, State}
+    end.
 
 delete(State) ->
     S = case basic_db_storage:drop(State#state.storage) of
         {ok, Storage} ->
             Storage;
         {error, Reason, Storage} ->
-            lager:warning("Error on destroying storage: ~p",[Reason]),
+            lager:info("BAD_DROP: {~p, ~p}  Reason: ~p",[State#state.index, node(), Reason]),
             Storage
     end,
     case State#state.hashtrees of
@@ -444,8 +504,6 @@ delete(State) ->
     end,
     {ok, State#state{hashtrees=undefined, storage=S}}.
 
-% handle_coverage(_Req, _KeySpaces, _Sender, State) ->
-%     {stop, not_implemented, State}.
 
 handle_exit(_Pid, _Reason, State) ->
     {noreply, State}.
@@ -484,24 +542,28 @@ open_storage(Index) ->
     % get the preferred backend in the configuration file, defaulting to ETS if
     % there is no preference.
     Backend = case app_helper:get_env(basic_db, storage_backend) of
-        leveldb     -> {backend, leveldb};
-        ets         -> {backend, ets};
+        "leveldb"   -> {backend, leveldb};
+        "ets"       -> {backend, ets};
         _           -> {backend, ets}
     end,
-    % lager:debug("Using ~p for vnode ~p.",[Backend,Index]),
+    lager:info("Using ~p for vnode ~p.",[Backend,Index]),
     % give the name to the backend for this vnode using its position in the ring.
     DBName = filename:join("data/objects/", integer_to_list(Index)),
     {ok, Storage} = basic_db_storage:open(DBName, [Backend]),
-    Storage.
+    {Backend, Storage}.
 
 % @doc Close the key-value backend.
 close_all(undefined) -> ok;
-close_all(_State=#state{storage = Storage} ) ->
+close_all(_State=#state{id          = Id,
+                        storage     = Storage,
+                        dets        = Dets } ) ->
     case basic_db_storage:close(Storage) of
         ok -> ok;
         {error, Reason} ->
             lager:warning("Error on closing storage: ~p",[Reason])
-    end.
+    end,
+    ok = save_vnode_state(Dets, Id),
+    ok = dets:close(Dets).
 
 
 maybe_create_hashtrees(State=#state{index=Index}) ->
@@ -572,3 +634,87 @@ max_hashtree_tokens() ->
     app_helper:get_env(basic_db,
                        anti_entropy_max_async,
                        ?DEFAULT_HASHTREE_TOKENS).
+
+
+
+-spec maybe_tick(state()) -> state().
+maybe_tick(State=#state{stats=false}) ->
+    schedule_report(?REPORT_TICK_INTERVAL),
+    State;
+maybe_tick(State=#state{stats=true}) ->
+    {_, NextState} = report_stats(State),
+    schedule_report(?REPORT_TICK_INTERVAL),
+    NextState.
+
+-spec schedule_report(non_neg_integer()) -> ok.
+schedule_report(Interval) ->
+    %% Perform tick every X seconds
+    erlang:send_after(Interval, self(), report_tick),
+    ok.
+
+
+report_stats(State) ->
+    ok = save_vnode_state(State#state.dets, State#state.id),
+    % Optionally collect stats
+    case State#state.stats of
+        true ->
+            DelKeys = length(get_deleted_keys(State#state.id)),
+            basic_db_stats:notify({histogram, deleted_keys}, DelKeys),
+
+            WKeys = length(get_written_keys(State#state.id)),
+            basic_db_stats:notify({histogram, written_keys, WKeys),
+
+            ok;
+        false -> ok
+    end,
+    {ok, State}.
+
+
+save_kv(Key={_,_}, DVV, State) ->
+    save_kv(Key, DVV, State, true).
+save_kv(Key={_,_}, DVV, State, ETS) ->
+    case dvv:values(DVV) of
+        [] ->
+            ETS andalso ets:insert(get_ets_id(State#state.id), {Key, 1});
+        _ ->
+            ETS andalso ets:insert(get_ets_id(State#state.id), {Key, 0});
+    end,
+    basic_db_storage:put(State#state.storage, Key, DVV)
+
+get_ets_id(Id) ->
+    list_to_atom(lists:flatten(io_lib:format("~p", [Id]))).
+
+% @doc Saves the relevant vnode state to the storage.
+save_vnode_state(Dets, VnodeId={Index,_}) ->
+    Key = {?VNODE_STATE_KEY, Index},
+    ok = dets:insert(Dets, {Key, VnodeId}),
+    ok = dets:sync(Dets),
+    lager:debug("Saved state for vnode ~p.",[VnodeId]),
+    ok.
+
+% @doc Reads the relevant vnode state from the storage.
+read_vnode_state(Index) ->
+    Folder = "data/vnode_state/",
+    ok = filelib:ensure_dir(Folder),
+    FileName = filename:join(Folder, integer_to_list(Index)),
+    Ref = list_to_atom(integer_to_list(Index)),
+    {ok, Dets} = dets:open_file(Ref,[{type, set},
+                                    {file, FileName},
+                                    {auto_save, infinity},
+                                    {min_no_slots, 1}]),
+    Key = {?VNODE_STATE_KEY, Index},
+    case dets:lookup(Dets, Key) of
+        [] -> % there isn't a past vnode state stored
+            {Dets, not_found};
+        {error, Error} -> % some unexpected error
+            {Dets, error, Error};
+        [{Key, VnodeId={Index,_}}] ->
+            {Dets, VnodeId}
+    end.
+
+
+get_deleted_keys(Id) ->
+    ets:select(get_ets_id(Id),[{{'$1', '$2'}, [{'==', '$2', 0}], ['$1'] }]).
+
+get_written_keys(Id) ->
+    ets:select(get_ets_id(Id),[{{'$1', '$2'}, [{'==', '$2', 1}], ['$1'] }]).

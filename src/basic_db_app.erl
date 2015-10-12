@@ -26,6 +26,13 @@ start(_StartType, _StartArgs) ->
             % Backend1 = app_helper:get_env(basic_db, storage_backend),
             % Backend2 = application:get_env(basic_db, storage_backend),
             % lager:info("Using the Backend: ~p or ~p!.",[Backend1,Backend2]),
+            basic_db_stats:add_stats([
+                % number of deleted keys
+                {histogram, deleted_keys},
+                % number of written keys
+                {histogram, written_keys}
+            ]),
+            basic_db_stats:start(),
 
             {ok, Pid};
         {error, Reason} ->
