@@ -7,12 +7,13 @@
   {applications, [
                   kernel,
                   stdlib,
+                  ranch,
                   riak_core
                  ]},
   {mod, { basic_db_app, []}},
   {env, [
-            %% Used LevelDB as the default backend
-            {storage_backend, leveldb},
+            %% Used ETS as the default backend
+            {storage_backend, "ets"}
 
             %% Enable active anti-entropy by default
             %% With debugging

@@ -16,16 +16,17 @@ start(_StartType, _StartArgs) ->
 
             ok = riak_core:register([{vnode_module, basic_db_vnode}]),
 
-            % ok = riak_core_ring_events:add_guarded_handler(basic_db_ring_event_handler, []),
+            ok = riak_core_ring_events:add_guarded_handler(basic_db_ring_event_handler, []),
             % ok = riak_core_node_watcher_events:add_guarded_handler(basic_db_node_event_handler, []),
             ok = riak_core_node_watcher:service_up(basic_db, self()),
 
-            % EntryRoute = {["basic_db", "ping", client], basic_db_wm_ping, []},
-            % webmachine_router:add_route(EntryRoute),
+            Port = case app_helper:get_env(basic_db, protocol_port) of
+                N when is_integer(N)    -> N;
+                _                       -> 0
+            end,
+            {ok, _} = ranch:start_listener(the_socket, 10,
+                            ranch_tcp, [{port, Port}], basic_db_socket, []),
 
-            % Backend1 = app_helper:get_env(basic_db, storage_backend),
-            % Backend2 = application:get_env(basic_db, storage_backend),
-            % lager:info("Using the Backend: ~p or ~p!.",[Backend1,Backend2]),
             basic_db_stats:add_stats([
                 % number of deleted keys
                 {histogram, deleted_keys},
