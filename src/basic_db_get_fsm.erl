@@ -198,7 +198,7 @@ read_repair(BKey, Replies, AAE_Repair) ->
     basic_db_vnode:repair(OutadedNodes, BKey, FinalDVV),
     ok.
 
--spec final_dvv_from_replies([index_node()]) -> dvv:clock().
+-spec final_dvv_from_replies([{index_node(), dvv()}]) -> dvv:clock().
 final_dvv_from_replies(Replies) ->
     DVVs = [DVV || {_,DVV} <- Replies],
     dvv:sync(DVVs).
