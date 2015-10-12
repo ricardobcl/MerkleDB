@@ -16,7 +16,7 @@ start(_StartType, _StartArgs) ->
 
             ok = riak_core:register([{vnode_module, basic_db_vnode}]),
 
-            ok = riak_core_ring_events:add_guarded_handler(basic_db_ring_event_handler, []),
+            % ok = riak_core_ring_events:add_guarded_handler(basic_db_ring_event_handler, []),
             % ok = riak_core_node_watcher_events:add_guarded_handler(basic_db_node_event_handler, []),
             ok = riak_core_node_watcher:service_up(basic_db, self()),
 

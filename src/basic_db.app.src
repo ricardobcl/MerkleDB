@@ -13,10 +13,10 @@
   {mod, { basic_db_app, []}},
   {env, [
             %% Used ETS as the default backend
-            {storage_backend, "ets"}
+            {storage_backend, "ets"},
 
             %% Enable active anti-entropy by default
             %% With debugging
-            {anti_entropy, {on, [debug]}}
+            {anti_entropy, {on, []}}
         ]}
  ]}.

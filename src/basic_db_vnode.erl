@@ -234,12 +234,12 @@ handle_command({write, ReqID, Operation, BKey, Value, Context}, _Sender, State) 
 
     % debug
     RN = basic_db_utils:replica_nodes(BKey),
-    This = {State#state.id, node()},
+    This = {State#state.index, node()},
     case lists:member(This, RN) of
         true   ->
             ok;
         false ->
-            lager:info("(2)IxNd: ~p work vnode for key ~p in ~p", [This, BKey, RN])
+            lager:info("(1)IxNd: ~p work vnode for key ~p in ~p", [This, BKey, RN])
     end,
 
     % get and fill the causal history of the local key
@@ -273,7 +273,7 @@ handle_command({replicate, ReqID, BKey, NewDVV}, _Sender, State) ->
 
     % debug
     RN = basic_db_utils:replica_nodes(BKey),
-    This = {State#state.id, node()},
+    This = {State#state.index, node()},
     case lists:member(This, RN) of
         true   ->
             ok;
@@ -662,7 +662,7 @@ report_stats(State) ->
             basic_db_stats:notify({histogram, deleted_keys}, DelKeys),
 
             WKeys = length(get_written_keys(State#state.id)),
-            basic_db_stats:notify({histogram, written_keys, WKeys),
+            basic_db_stats:notify({histogram, written_keys}, WKeys),
 
             ok;
         false -> ok
@@ -675,11 +675,11 @@ save_kv(Key={_,_}, DVV, State) ->
 save_kv(Key={_,_}, DVV, State, ETS) ->
     case dvv:values(DVV) of
         [] ->
-            ETS andalso ets:insert(get_ets_id(State#state.id), {Key, 1});
-        _ ->
             ETS andalso ets:insert(get_ets_id(State#state.id), {Key, 0});
+        _ ->
+            ETS andalso ets:insert(get_ets_id(State#state.id), {Key, 1})
     end,
-    basic_db_storage:put(State#state.storage, Key, DVV)
+    basic_db_storage:put(State#state.storage, Key, DVV).
 
 get_ets_id(Id) ->
     list_to_atom(lists:flatten(io_lib:format("~p", [Id]))).

@@ -102,7 +102,7 @@ init([Stats]) ->
 
     %% Create the stats directory and setups the output file handles for dumping 
     %% periodic CSV of histogram results.
-    init_histogram_files(Stats),
+    init_histogram_files(Stats, true),
     %% Register each new stat with folsom.
     [create_stat_folsom(Stat) || Stat <- Stats],
 
@@ -130,7 +130,6 @@ handle_call(stop, _From, State) ->
                                 active = false}};
 
 handle_call({add_stats, NewStats}, _From, State = #state{stats = CurrentStats}) ->
-    ?PRINT("add_stats"),
     ?PRINT(NewStats),
     %% Create the stats directory and setups the output file handles for dumping 
     %% periodic CSV of histogram results.
@@ -262,8 +261,8 @@ create_new_dir() ->
 
 get_stats_dir() ->
     {ok, CWD} = file:get_cwd(),
-    WDir = filename:dirname(CWD),
-    filename:join([WDir, "stats"]).
+    % WDir = filename:dirname(CWD),
+    filename:join([CWD, "data/stats"]).
 
 get_stats_dir(?CURRENT_DIR) ->
     Dir = get_stats_dir(),

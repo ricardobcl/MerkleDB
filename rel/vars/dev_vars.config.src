@@ -10,7 +10,7 @@
 {handoff_port,      @HANDOFFPORT@}.
 {protocol_port,     @PROTOCOLPORT@}.
 {storage_backend,   "ets"}.
-{anti_entropy,      {on, [debug]}}.
+{anti_entropy,      {on, []}}.
 
 %%
 %% etc/vm.args

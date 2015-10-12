@@ -535,7 +535,7 @@ average(X) ->
 average([H|T], Length, Sum) ->
     average(T, Length + 1, Sum + H);
 average([], Length, Sum) ->
-    Sum / max(1,Length)..
+    Sum / max(1,Length).
 
         % % node id used for in logical clocks
         % id          :: id(),

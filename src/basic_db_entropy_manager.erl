@@ -202,6 +202,14 @@ cancel_exchanges() ->
 
 -spec init([]) -> {'ok',state()}.
 init([]) ->
+    case app_helper:get_env(basic_db, storage_backend) of
+        "leveldb"   -> ok;
+        _           -> 
+            AEpath = "./data/anti_entropy",
+            os:cmd("rm -Rf " ++ AEpath),
+            ExFSMpath = "./data/basic_db_exchange_fsm",
+            os:cmd("rm -Rf " ++ ExFSMpath)
+    end,
     %% Side-effects section
     set_aae_throttle(0),
     %% basic_db.app has some sane limits already set, or config via Cuttlefish

@@ -40,6 +40,10 @@ init(_Args) ->
                     {basic_db_coverage_fsm_sup, start_link, []},
                     permanent, infinity, supervisor, [basic_db_coverage_fsm_sup]},
 
+    StatsServer = {basic_db_stats,
+                    {basic_db_stats, start_link, []},
+                    permanent, 30000, worker, [basic_db_stats]},
+
     EntropyManager = {basic_db_entropy_manager,
                       {basic_db_entropy_manager, start_link, []},
                       permanent, 30000, worker, [basic_db_entropy_manager]},
@@ -50,4 +54,4 @@ init(_Args) ->
 
     { ok,
         { {one_for_one, 5, 10},
-          [VMaster, WriteFSMs, GetFSMs, CoverageFSMs, EntropyManager, SocketServer]}}.
+          [VMaster, WriteFSMs, GetFSMs, CoverageFSMs, EntropyManager, StatsServer, SocketServer]}}.

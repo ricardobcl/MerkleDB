@@ -184,7 +184,7 @@ read_repair(BKey, Replies, AAE_Repair) ->
     case AAE_Repair of
         false ->
             length(OutadedNodes)==0 andalso
-                lager:info("GET_FSM: AAE REPAIR for ~p nodes, ~p out. nodes", [length(Replies),length(OutadedNodes)]),
+                lager:info("GET_FSM: AAE REPAIR for ~p nodes, ~p outdated nodes", [length(Replies),length(OutadedNodes)]),
             PayloadSize = byte_size(term_to_binary(dvv:values(FinalDVV))),
             MetaSize = byte_size(term_to_binary(dvv:join(FinalDVV))),
             [rpc:cast(Node, basic_db_entropy_info, key_repair_complete, 
@@ -198,7 +198,7 @@ read_repair(BKey, Replies, AAE_Repair) ->
     basic_db_vnode:repair(OutadedNodes, BKey, FinalDVV),
     ok.
 
--spec final_dvv_from_replies([{index_node(), dvv()}]) -> dvv:clock().
+-spec final_dvv_from_replies([{index_node(), dvv:clock()}]) -> dvv:clock().
 final_dvv_from_replies(Replies) ->
     DVVs = [DVV || {_,DVV} <- Replies],
     dvv:sync(DVVs).
@@ -207,7 +207,7 @@ create_client_reply(From, ReqID, _Replies, _ReturnValue = false) ->
     From ! {ReqID, ok, get, ?OPT_REPAIR};
 create_client_reply(From, ReqID, Replies, _ReturnValue = true) ->
     FinalDVV = final_dvv_from_replies(Replies),
-    case FinalDVV =:= dvv:new() of
+    case dvv:values(FinalDVV) == [] of
         true -> % no response found; return the context for possibly future writes
             From ! {ReqID, not_found, get, dvv:join(FinalDVV)};
         false -> % there is at least on value for this key
