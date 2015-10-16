@@ -6,9 +6,12 @@
 -export([
          ping/0,
          vstate/0,
+         vstate/1,
          vstates/0,
          new_client/0,
          new_client/1,
+         restart/0,
+         restart/1,
          get/1,
          get/2,
          new/2,
@@ -17,6 +20,8 @@
          put/4,
          delete/2,
          delete/3,
+         restart_at_node/1,
+         restart_at_node/2,
          get_at_node/2,
          get_at_node/3,
          new_at_node/3,
@@ -47,11 +52,64 @@ ping() ->
     riak_core_vnode_master:sync_spawn_command(IndexNode, ping, basic_db_vnode_master).
 
 
+%% @doc Reset a random vnode.
+restart() ->
+    ThisNode = node(),
+    case basic_db_utils:vnodes_from_node(ThisNode) of
+        [] ->
+            lager:warning("No vnodes to restart on node ~p", [ThisNode]),
+            error;
+        Vnodes ->
+            IndexNode = {_, ThisNode} = case Vnodes of
+                [Vnode] -> Vnode;
+                _       -> basic_db_utils:random_from_list(Vnodes)
+            end,
+            restart(IndexNode)
+    end.
+
+restart(IndexNode) ->
+    {ok, LocalNode} = new_client(),
+    restart_at_node(IndexNode, LocalNode).
+
+restart_at_node({?MODULE, ThisNode}) ->
+    case basic_db_utils:vnodes_from_node(ThisNode) of
+        [] ->
+            lager:warning("No vnodes to restart on node ~p", [ThisNode]),
+            error;
+        Vnodes ->
+            IndexNode = {_, ThisNode} = case Vnodes of
+                [Vnode] -> Vnode;
+                _       -> basic_db_utils:random_from_list(Vnodes)
+            end,
+            restart_at_node(IndexNode, {?MODULE, ThisNode})
+    end.
+
+restart_at_node(IndexNode, {?MODULE, TargetNode}) ->
+    ReqID = basic_db_utils:make_request_id(),
+    Request = [ ReqID,
+                self(),
+                IndexNode,
+                []],
+    case node() of
+        % if this node is already the target node
+        TargetNode ->
+            basic_db_restart_fsm_sup:start_restart_fsm(Request);
+        % this is not the target node
+        _ ->
+            proc_lib:spawn_link(TargetNode, basic_db_restart_fsm, start_link, Request)
+    end,
+    wait_for_reqid(ReqID, ?DEFAULT_TIMEOUT*3).
+
+
 %% @doc Get the state from a random vnode.
 vstate() ->
     DocIdx = riak_core_util:chash_key({<<"get_vnode_state">>, term_to_binary(now())}),
     PrefList = riak_core_apl:get_primary_apl(DocIdx, 1, basic_db),
     [{IndexNode, _Type}] = PrefList,
+    vstate(IndexNode).
+
+%% @doc Get the state from a specific vnode.
+vstate(IndexNode) ->
     riak_core_vnode_master:sync_spawn_command(IndexNode, get_vnode_state, basic_db_vnode_master).
 
 
@@ -482,7 +540,9 @@ wait_for_reqid(ReqID, Timeout) ->
         % sync
         {ReqID, ok, sync}                   -> ok;
         % coverage
-        {ReqID, ok, coverage, Results}      -> process_vnode_states(Results)
+        {ReqID, ok, coverage, Results}      -> process_vnode_states(Results);
+        % restart/reset
+        {ReqID, ok, restart, NewVnodeID}    -> lager:info("New ID: ~p",[NewVnodeID])
     after Timeout ->
         {error, timeout}
     end.
@@ -493,48 +553,14 @@ decode_get_reply({BinValues, Context}) ->
     {Values, Context}.
 
 process_vnode_states(States) ->
-    Results  = [ process_vnode_state(State) || State <- States ],
-    Dots        = [ begin #{dots        := Res} = R , Res end || R<- Results ],
-    ClockSize   = [ begin #{clock_size  := Res} = R , Res end || R<- Results ],
-    Keys        = [ begin #{keys        := Res} = R , Res end || R<- Results ],
-    KLSize      = [ begin #{kl_size     := Res} = R , Res end || R<- Results ],
+    _Results  = [ process_vnode_state(State) || State <- States ],
+    % Dots        = [ begin #{dots        := Res} = R , Res end || R<- Results ],
     io:format("\n\n========= Vnodes ==========   \n"),
     io:format("\t Number of vnodes                  \t ~p\n",[length(States)]),
-    io:format("\t Total     average miss_dots       \t ~p\n",[average(Dots)]),
-    io:format("\t All       average miss_dots       \t ~p\n",[lists:sort(Dots)]),
-    io:format("\t Average   clock size              \t ~p\n",[average(ClockSize)]),
-    io:format("\t All       clock size              \t ~p\n",[lists:sort(ClockSize)]),
-    io:format("\t Average   # keys in KL            \t ~p\n",[average(Keys)]),
-    io:format("\t Per vnode # keys in KL            \t ~p\n",[lists:sort(Keys)]),
-    io:format("\t Average   size keys in KL         \t ~p\n",[average(KLSize)]),
-    io:format("\t Per vnode size keys in KL         \t ~p\n",[lists:sort(KLSize)]),
     ok.
 
-process_vnode_state({Index, _Node, {ok,{state, _Id, Index, NodeClock, _Storage,
-                    _Replicated, KeyLog, _Dets, _Updates_mem, _Stats}}}) ->
-    % ?PRINT(NodeClock),
-    MissingDots = [ miss_dots(Entry) || {_,Entry} <- NodeClock ],
-    {Keys, Size} = KeyLog,
-    #{
-          dots          => average(MissingDots)
-        , clock_size    => byte_size(term_to_binary(NodeClock))
-        , keys          => Keys %length(Keys)
-        , kl_size       => Size %byte_size(term_to_binary(KeyLog))
-    }.
-
-
-miss_dots({N,B}) ->
-    case values_aux(N,B,[]) of
-        [] -> 0;
-        L  -> lists:max(L) - N - length(L)
-    end.
-values_aux(_,0,L) -> L;
-values_aux(N,B,L) ->
-    M = N + 1,
-    case B rem 2 of
-        0 -> values_aux(M, B bsr 1, L);
-        1 -> values_aux(M, B bsr 1, [ M | L ])
-    end.
+process_vnode_state({_Index, _Node, {ok,_State}}) ->
+    #{ok => average([])}.
 
 average(X) ->
     average(X, 0, 0).
@@ -542,22 +568,3 @@ average([H|T], Length, Sum) ->
     average(T, Length + 1, Sum + H);
 average([], Length, Sum) ->
     Sum / max(1,Length).
-
-        % % node id used for in logical clocks
-        % id          :: id(),
-        % % index on the consistent hashing ring
-        % index       :: index(),
-        % % node logical clock
-        % clock       :: bvv(),
-        % % key->value store, where the value is a DCC (values + logical clock)
-        % storage     :: basic_db_storage:storage(),
-        % % what peer nodes have from my coordinated writes (not real-time)
-        % replicated  :: vv(),
-        % % log for keys that this node coordinated a write (eventually older keys are safely pruned)
-        % keylog      :: keylog(),
-        % % number of updates (put or deletes) since saving node state to storage
-        % updates_mem :: integer(),
-        % % DETS table that stores in disk the vnode state
-        % dets        :: dets(),
-        % % a flag to collect or not stats
-        % stats       :: boolean()

@@ -44,6 +44,12 @@ random_index_from_node(TargetNode) ->
     IndexNodes = chashbin:to_list_filter(Filter, RingBin),
     random_from_list(IndexNodes).
 
+-spec vnodes_from_node(node()) -> [index_node()].
+vnodes_from_node(TargetNode) ->
+    % getting the binary consistent hash is more efficient since it lives in a ETS.
+    {ok, RingBin} = riak_core_ring_manager:get_chash_bin(),
+    Filter = fun ({_Index, Owner}) -> Owner =:= TargetNode end,
+    chashbin:to_list_filter(Filter, RingBin).
 
 %% @doc Returns the nodes that also replicate a subset of keys from some node "NodeIndex".
 %% We are assuming a consistent hashing ring, thus we return the N-1 before this node in the

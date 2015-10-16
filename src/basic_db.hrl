@@ -12,7 +12,7 @@
 %% Options for AAE.
 -define(DEFAULT_HASHTREE_TOKENS, 90).
 -define(TICK, 2000).
--define(MTREE_CHILDREN, 100). % (MTREE_CHILDREN ^ 2) leafs
+-define(MTREE_CHILDREN, 10). % (MTREE_CHILDREN ^ 2) leafs
 
 %% Options for read requests.
 -define(OPT_DO_RR, do_read_repair).

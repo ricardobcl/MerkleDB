@@ -141,9 +141,11 @@ handle_call({add_stats, NewStats}, _From, State = #state{stats = CurrentStats}) 
 handle_call(new_dir, _From, State) ->
     %% Create a new folder for stats and point ?CURRENT_DIR to it.
     init_histogram_files(State#state.stats, true),
-    {reply, ok, State}.
+    {reply, ok, State};
 
-
+handle_call(Command, _From, State) ->
+    lager:warning("Stats: unknown call cmd: ~p", [Command]),
+    {noreply, State}.
 
 %% Asynchronous calls
 
@@ -180,6 +182,10 @@ handle_cast({notify, {histogram, Name}, Value}, State = #state{
 
 handle_cast({notify, {counter, Name}, Value}, State = #state{active = true}) ->
     folsom_metrics:notify({counter, Name}, {inc, Value}),
+    {noreply, State};
+
+handle_cast(Command, State) ->
+    lager:warning("Stats: unknown cast cmd: ~p", [Command]),
     {noreply, State}.
 
 
@@ -187,7 +193,12 @@ handle_info(flush, State) ->
     consume_flush_msgs(),
     Now = os:timestamp(),
     process_stats(Now, State),
-    {noreply, State#state { last_write_time = Now }}.
+    {noreply, State#state { last_write_time = Now }};
+
+handle_info(Command, State) ->
+    lager:warning("Stats: unknown info cmd: ~p", [Command]),
+    {noreply, State}.
+
 
 terminate(_Reason, State) ->
     %% Do the final stats report
@@ -197,10 +208,6 @@ terminate(_Reason, State) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
-
-
-
-
 
 
 

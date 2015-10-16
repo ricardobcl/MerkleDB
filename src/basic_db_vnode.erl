@@ -22,6 +22,7 @@
 
 -export([
          get_vnode_id/1,
+         restart/2,
          read/3,
          repair/3,
          write/6,
@@ -43,8 +44,6 @@
         id          :: vnode_id(),
         % index on the consistent hashing ring
         index       :: index(),
-        % the current node pid
-        node        :: node(),
         % key->value store, where the value is a DVV (values + logical clock)
         storage     :: basic_db_storage:storage(),
         % server that handles the hashtrees for this vnode
@@ -73,6 +72,12 @@ get_vnode_id(IndexNodes) ->
     riak_core_vnode_master:command(IndexNodes,
                                     get_vnode_id,
                                    {raw, undefined, self()},
+                                   ?MASTER).
+
+restart(IndexNodes, ReqID) ->
+    riak_core_vnode_master:command(IndexNodes,
+                                   {restart, ReqID},
+                                   {fsm, undefined, self()},
                                    ?MASTER).
 
 
@@ -145,20 +150,15 @@ rehash(Preflist, Bucket, Key) ->
 %%%===================================================================
 
 init([Index]) ->
-    % generate a new vnode ID for now
-    <<A:32, B:32, C:32>> = crypto:rand_bytes(12),
-    random:seed({A,B,C}),
-    % get a random index withing the length of the list
-    NodeId = {Index, random:uniform(999999999999)},
     % try to read the vnode state in the DETS file, if it exists
     {Dets, NodeId2} =
         case read_vnode_state(Index) of
             {Ref, not_found} -> % there isn't a past vnode state stored
                 lager:debug("No persisted state for vnode index: ~p.",[Index]),
-                {Ref, NodeId};
+                {Ref, new_vnode_id(Index)};
             {Ref, error, Error} -> % some unexpected error
                 lager:error("Error reading vnode state from storage: ~p", [Error]),
-                {Ref, NodeId};
+                {Ref, new_vnode_id(Index)};
             {Ref, VnodeId} -> % we have vnode state in the storage
                 lager:info("Recovered state for vnode ID: ~p.",[VnodeId]),
                 {Ref, VnodeId}
@@ -168,13 +168,12 @@ init([Index]) ->
         case open_storage(Index) of
             {{backend, ets}, S} ->
                 % if the storage is in memory, start with an "empty" vnode state
-                {S, NodeId};
+                {S, new_vnode_id(Index)};
             {_, S} ->
                 {S, NodeId2}
         end,
     % create an ETS to store keys written and deleted in this node (for stats)
-    ((ets:info(get_ets_id(NodeId3)) /= undefined) orelse
-        ets:new(get_ets_id(NodeId3), [named_table, public, set, {write_concurrency, false}])),
+    create_ets_all_keys(NodeId3),
     % schedule a periodic reporting message (wait 2 seconds initially)
     schedule_report(2000),
     % create the state
@@ -182,7 +181,6 @@ init([Index]) ->
         % for now, lets use the index in the consistent hash as the vnode ID
         id          = NodeId3,
         index       = Index,
-        node        = node(),
         storage     = Storage,
         hashtrees   = undefined,
         dets        = Dets,
@@ -216,7 +214,7 @@ handle_command({read, ReqID, BKey}, _Sender, State) ->
         true -> ok;
         false -> ok
     end,
-    IndexNode = {State#state.index, State#state.node},
+    IndexNode = {State#state.index, node()},
     {reply, {ok, ReqID, IndexNode, Response}, State};
 
 
@@ -343,6 +341,27 @@ handle_command({rehash, BKey}, _, State) ->
     {noreply, State};
 
 
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Restarting Vnode (and recovery of keys)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% On the restarting node
+handle_command({restart, ReqID}, _Sender, State) ->
+    OldVnodeID = State#state.id,
+    NewVnodeID = new_vnode_id(State#state.index),
+    true = ets:delete(get_ets_id(OldVnodeID)),
+    create_ets_all_keys(NewVnodeID),
+    {ok, Storage1} = basic_db_storage:drop(State#state.storage),
+    ok = basic_db_storage:close(Storage1),
+    % open the storage backend for the key-values of this vnode
+    {_, NewStorage} = open_storage(State#state.index),
+    ok = save_vnode_state(State#state.dets, NewVnodeID),
+    % reset the Merkle Trees
+    basic_db_index_hashtree:clear(State#state.hashtrees),
+    % State2 = maybe_create_hashtrees(State#state{id=NewVnodeID, storage=NewStorage}),
+    {reply, {ok, ReqID, OldVnodeID, NewVnodeID},
+        State#state{id=NewVnodeID, storage=NewStorage}};
 
 %% Sample command: respond to a ping
 handle_command(ping, _Sender, State) ->
@@ -718,3 +737,16 @@ get_deleted_keys(Id) ->
 
 get_written_keys(Id) ->
     ets:select(get_ets_id(Id),[{{'$1', '$2'}, [{'==', '$2', 1}], ['$1'] }]).
+
+
+new_vnode_id(Index) ->
+    % generate a new vnode ID for now
+    <<A:32, B:32, C:32>> = crypto:rand_bytes(12),
+    random:seed({A,B,C}),
+    % get a random index withing the length of the list
+    {Index, random:uniform(999999999999)}.
+
+create_ets_all_keys(NewVnodeID) ->
+    ((ets:info(get_ets_id(NewVnodeID)) /= undefined) orelse
+        ets:new(get_ets_id(NewVnodeID), [named_table, public, set, {write_concurrency, false}])).
+
