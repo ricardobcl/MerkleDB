@@ -1,12 +1,14 @@
+
 -module(basic_db_stats).
 
 -behaviour(gen_server).
 
 
-%% API
+%% API for gen_server
 -export([     start_link/0
             , start_link/1
             , add_stats/1
+            , add_stats/2
             , notify/2
             , start/0
             , stop/0
@@ -19,22 +21,19 @@
 
 -include_lib("basic_db.hrl").
 
--define(FLUSH_INTERVAL, 3). % 3 seconds
 -define(WARN_INTERVAL, 1000). % Warn once a second
 -define(CURRENT_DIR, "current").
+-define(ETS, ets_basic_db_entropy).
 
-
--record(state, { stats              = [],
-                 start_time         = os:timestamp(),
-                 last_write_time    = os:timestamp(),
-                 flush_interval     = ?FLUSH_INTERVAL*1000,
-                 timer              = undefined,
-                 active             = false,
-                 last_warn          = {0,0,0}
-                 }).
-
-
-
+-record(state, { 
+        stats              = [],
+        start_time         = os:timestamp(),
+        last_write_time    = os:timestamp(),
+        flush_interval     = ?STATS_FLUSH_INTERVAL*1000,
+        timer              = undefined,
+        active             = false,
+        last_warn          = {0,0,0}
+}).
 
 
 %% ====================================================================
@@ -47,11 +46,12 @@ start_link() ->
 start_link(Stats) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [Stats], []).
 
-
 %% @doc Dynamically adds a list of stats {Type, Name}
 add_stats(NewStats) ->
-    ?PRINT(NewStats),
-    gen_server:call(?MODULE, {add_stats, NewStats}).
+    add_stats(NewStats, "").
+%% @doc Dynamically adds a list of stats {Type, Name} with Optional header for csv's
+add_stats(NewStats, OptionalHeader) ->
+    gen_server:call(?MODULE, {add_stats, NewStats, OptionalHeader}).
 
 notify(Name, 0.0) -> notify(Name, 0);
 notify(Name, Value) ->
@@ -69,45 +69,25 @@ new_dir() ->
     gen_server:call(?MODULE, new_dir).
 
 
-
-
-
-
-
 %% ====================================================================
 %% gen_server callbacks
 %% ====================================================================
 
 init([Stats]) ->
+    %% Create the ETS table for (cumulative?) stats
+    _ = create_table(),
     %% Trap exits so we have a chance to flush data
     process_flag(trap_exit, true),
-    process_flag(priority, high),
-    
-    % %% Spin up folsom
-    % folsom:start(),
+    process_flag(priority, normal),
 
-    % %% Create the stats directory and setups the output file handles for dumping 
-    % %% periodic CSV of histogram results.
-    % init_histogram_files(Stats),
-
-    % %% Setup a histogram and counter for each operation -- we only track stats
-    % %% on successful operations
-    % [begin
-    %      folsom_metrics:new_histogram({stats, Op}, slide, ReportInterval),
-    %      folsom_metrics:new_counter({units, Op})
-    %  end || Op <- Stats],
-
-    % %% Schedule next write/reset of data
-    % ReportIntervalSec = timer:seconds(?FLUSH_INTERVAL),
-
-    %% Create the stats directory and setups the output file handles for dumping 
+    %% Create the stats directory and setups the output file handles for dumping
     %% periodic CSV of histogram results.
-    init_histogram_files(Stats, true),
+    _ = init_stat_files(Stats, "", true),
     %% Register each new stat with folsom.
-    [create_stat_folsom(Stat) || Stat <- Stats],
+    _ = [create_stat_folsom(Stat) || Stat <- Stats],
 
     {ok, #state{ stats = Stats,
-                 flush_interval = timer:seconds(?FLUSH_INTERVAL)}}.
+                 flush_interval = timer:seconds(?STATS_FLUSH_INTERVAL)}}.
 
 %% Synchronous calls
 handle_call(start, _From, State) ->
@@ -124,34 +104,31 @@ handle_call(stop, _From, State) ->
     {ok, cancel} = timer:cancel(State#state.timer),
     %% Flush data to disk
     Now = os:timestamp(),
-    process_stats(Now, State),
+    _ = process_stats(Now, State),
     {reply, ok, State#state{    last_write_time = Now,
                                 timer = undefined,
                                 active = false}};
 
-handle_call({add_stats, NewStats}, _From, State = #state{stats = CurrentStats}) ->
-    ?PRINT(NewStats),
-    %% Create the stats directory and setups the output file handles for dumping 
+handle_call({add_stats, NewStats, OptionalHeader}, _From, State = #state{stats = CurrentStats}) ->
+    %% Create the stats directory and setups the output file handles for dumping
     %% periodic CSV of histogram results.
-    init_histogram_files(NewStats),
+    _ = init_stat_files(NewStats, OptionalHeader),
     %% Register each new stat with folsom.
-    [create_stat_folsom(Stat) || Stat <- NewStats],
+    _ = [create_stat_folsom(Stat) || Stat <- NewStats],
     {reply, ok, State#state{stats = CurrentStats ++ NewStats}};
 
 handle_call(new_dir, _From, State) ->
     %% Create a new folder for stats and point ?CURRENT_DIR to it.
-    init_histogram_files(State#state.stats, true),
-    {reply, ok, State};
+    _ = init_stat_files(State#state.stats, "", true),
+    {reply, ok, State}.
 
-handle_call(Command, _From, State) ->
-    lager:warning("Stats: unknown call cmd: ~p", [Command]),
-    {noreply, State}.
+
 
 %% Asynchronous calls
 
 %% Ignore notifications if active flag is set to false.
 handle_cast({notify,_,_}, State=#state{active = false}) ->
-    lager:debug("Stats: ignored notification!"),
+    lager:info("Stats: ignored notification!"),
     {noreply, State};
 
 handle_cast({notify, {histogram, Name}, Value}, State = #state{
@@ -160,7 +137,7 @@ handle_cast({notify, {histogram, Name}, Value}, State = #state{
                             timer = Timer,
                             active = true}) ->
     Now = os:timestamp(),
-    TimeSinceLastReport = timer:now_diff(Now, LWT) / 1000, %% To get the diff in seconds
+    TimeSinceLastReport = timer:now_diff(Now, LWT) / 1000, %% To get the diff in milliseconds
     TimeSinceLastWarn = timer:now_diff(Now, State#state.last_warn) / 1000,
     NewState = case TimeSinceLastReport > (FI * 2) andalso TimeSinceLastWarn > ?WARN_INTERVAL of
         true ->
@@ -176,34 +153,37 @@ handle_cast({notify, {histogram, Name}, Value}, State = #state{
             lager:warning("basic_db_stats is not flushing received data (start the timer)\n");
         _ -> ok
     end,
-    folsom_metrics:notify({histogram, Name}, Value),
-    folsom_metrics:notify({units, Name}, {inc, 1}),
+    ok = folsom_metrics:notify({histogram, Name}, Value),
+    ok = folsom_metrics:notify({units, Name}, {inc, 1}),
     {noreply, NewState};
 
 handle_cast({notify, {counter, Name}, Value}, State = #state{active = true}) ->
-    folsom_metrics:notify({counter, Name}, {inc, Value}),
+    ok = folsom_metrics:notify({counter, Name}, {inc, Value}),
     {noreply, State};
 
-handle_cast(Command, State) ->
-    lager:warning("Stats: unknown cast cmd: ~p", [Command]),
+handle_cast({notify, {gauge, Name}, Value}, State = #state{active = true}) ->
+    % Values = folsom_metrics:get_metric_value({gauge, StatName}),
+    List = case ets:lookup(stats_gauge, Name) of
+        [] -> [];
+        [{Name, L}] -> L
+    end,
+    ets:insert(stats_gauge, {Name, [Value | List]}),
+    % ok = folsom_metrics:notify({gauge, Name}, Value),
     {noreply, State}.
+
 
 
 handle_info(flush, State) ->
     consume_flush_msgs(),
     Now = os:timestamp(),
-    process_stats(Now, State),
-    {noreply, State#state { last_write_time = Now }};
-
-handle_info(Command, State) ->
-    lager:warning("Stats: unknown info cmd: ~p", [Command]),
-    {noreply, State}.
-
+    _ = process_stats(Now, State),
+    {noreply, State#state { last_write_time = Now }}.
 
 terminate(_Reason, State) ->
     %% Do the final stats report
-    process_stats(os:timestamp(), State),
+    _ = process_stats(os:timestamp(), State),
     [ok = file:close(F) || {{csv_file, _}, F} <- erlang:get()],
+    [ok = file:close(F) || {{cdf_file, _}, F} <- erlang:get()],
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -212,12 +192,14 @@ code_change(_OldVsn, State, _Extra) ->
 
 
 
-
-
-
 %% ====================================================================
 %% Internal functions
 %% ====================================================================
+
+create_table() ->
+    (ets:info(?ETS) /= undefined) orelse
+        ets:new(?ETS, [named_table, public, set, {write_concurrency, true}]).
+
 
 process_stats(Now, State) ->
     %% Determine how much time has elapsed (seconds) since our last report
@@ -228,18 +210,19 @@ process_stats(Now, State) ->
     [begin
          OpAmount = save_histogram(Elapsed, Window, Stat),
          folsom_metrics:notify({units, Stat}, {dec, OpAmount})
-     end || {histogram, Stat} <- State#state.stats].
+     end || {histogram, Stat} <- State#state.stats],
+    [save_gauge(Stat) || {gauge, Stat} <- State#state.stats].
 
 
 %% @doc Write measurement info for a given op to the appropriate CSV. Returns
 %% the number of successful and failed stats in this window of time.
-save_histogram(Elapsed, Window, Op) ->
-    Stats = folsom_metrics:get_histogram_statistics({histogram, Op}),
-    Units = folsom_metrics:get_metric_value({units, Op}),
-    case proplists:get_value(n, Stats) > 0 of
+save_histogram(Elapsed, Window, StatName) ->
+    Stats = folsom_metrics:get_histogram_statistics({histogram, StatName}),
+    Units = folsom_metrics:get_metric_value({units, StatName}),
+    Line = case proplists:get_value(n, Stats) > 0 of
         true ->
             P = proplists:get_value(percentile, Stats),
-            Line = io_lib:format("~w, ~w, ~w, ~w, ~.1f, ~w, ~w, ~w, ~w, ~w, ~w\n",
+            io_lib:format("~w, ~w, ~w, ~w, ~.1f, ~w, ~w, ~w, ~w, ~w, ~w\n",
                                  [Elapsed,
                                   Window,
                                   Units,
@@ -252,13 +235,24 @@ save_histogram(Elapsed, Window, Op) ->
                                   proplists:get_value(max, Stats),
                                   0]);
         false ->
-            lager:debug("No data for op: ~p\n", [Op]),
-            Line = io_lib:format("~w, ~w, 0, 0, 0, 0, 0, 0, 0, 0, 0\n",
+            lager:debug("No data for stat: ~p\n", [StatName]),
+            io_lib:format("~w, ~w, 0, 0, 0, 0, 0, 0, 0, 0, 0\n",
                                  [Elapsed,
                                   Window])
     end,
-    ok = file:write(erlang:get({csv_file, Op}), Line),
+    ok = file:write(erlang:get({csv_file, StatName}), Line),
     Units.
+
+save_gauge(StatName) ->
+    % Values = folsom_metrics:get_metric_value({gauge, StatName}),
+    ok = case ets:lookup(stats_gauge, StatName) of
+        [] -> ok;
+        [{StatName, Values}] ->
+            ets:delete(stats_gauge, StatName),
+            % lager:info("~p: |~p| \n",[StatName, Values]),
+            Line = lists:foldl(fun(X,Acc) -> Acc++io_lib:format("~w\n", [X]) end, [], Values),
+            file:write(erlang:get({cdf_file, StatName}), Line)
+    end.
 
 create_new_dir() ->
     TestDir = get_stats_dir(new_dir_name()),
@@ -286,34 +280,45 @@ new_dir_name() ->
 
 
 %% @doc Create a stat with folsom
-% create_stat_folsom(Name, spiral) ->
-%     folsom_metrics:new_spiral({spiral, Name});
+create_stat_folsom({gauge, _Name}) ->
+    % ok = folsom_metrics:new_gauge({gauge, Name});
+    (ets:info(stats_gauge) =:= undefined) andalso
+        ets:new(stats_gauge, [named_table, public, set, {write_concurrency, true}]);
 create_stat_folsom({counter, Name}) ->
-    folsom_metrics:new_counter({counter, Name});
+    ok = folsom_metrics:new_counter({counter, Name});
 create_stat_folsom({histogram, Name}) ->
-    folsom_metrics:new_histogram({histogram, Name}, slide, ?FLUSH_INTERVAL),
-    folsom_metrics:new_counter({units, Name}).
+    ok = folsom_metrics:new_histogram({histogram, Name}, slide, ?STATS_FLUSH_INTERVAL),
+    ok = folsom_metrics:new_counter({units, Name}).
 
-%% @doc Create the stats directory and setups the output file handles for dumping 
+%% @doc Create the stats directory and setups the output file handles for dumping
 %% periodic CSV of histogram results.
-init_histogram_files(Stats) -> 
-    init_histogram_files(Stats, false).
-init_histogram_files(Stats, NewDir) ->
+init_stat_files(Stats, Header) ->
+    init_stat_files(Stats, Header, false).
+init_stat_files(Stats, Header, NewDir) ->
     TestDir = get_stats_dir(?CURRENT_DIR),
-    case (not filelib:is_dir(TestDir)) orelse NewDir of
+    _ = case (not filelib:is_dir(TestDir)) orelse NewDir of
         true -> create_new_dir();
         false -> ok
     end,
-    ?PRINT(Stats),
     %% Setup output file handles for dumping periodic CSV of histogram results.
-    [erlang:put({csv_file, Name}, histogram_csv_file(Name,TestDir)) || {histogram, Name} <- Stats].
+    [erlang:put({csv_file, Name}, histogram_csv_file(Name,TestDir,Header)) || {histogram, Name} <- Stats],
+    %% Setup output file handles for dumping gauge value for the CDF (Cumulative distribution function).
+    [erlang:put({cdf_file, Name}, gauge_cdf_file(Name,TestDir,Header))     || {gauge, Name} <- Stats].
 
 %% @doc Setups a histogram file for a stat.
-histogram_csv_file(Label, Dir) ->
+histogram_csv_file(Label, Dir, Header) ->
     Fname = normalize_label(Label) ++ "_hist.csv",
     Fname2 = filename:join([Dir, Fname]),
     {ok, F} = file:open(Fname2, [raw, binary, write]),
-    ok = file:write(F, <<"elapsed, window, n, min, mean, median, 95th, 99th, 99_9th, max, errors\n">>),
+    ok = file:write(F, list_to_binary("elapsed, window, n, min, mean, median, 95th, 99th, 99_9th, max, errors ## "++Header++"\n")),
+    F.
+
+%% @doc Setups a csv file for a gauges.
+gauge_cdf_file(Label, Dir, Header) ->
+    Fname = normalize_label(Label) ++ "_gauge.csv",
+    Fname2 = filename:join([Dir, Fname]),
+    {ok, F} = file:open(Fname2, [raw, binary, write]),
+    ok = file:write(F, list_to_binary("gauge ## "++Header++"\n")),
     F.
 
 normalize_label(Label) when is_list(Label) ->

@@ -32,8 +32,8 @@
     do_rr       :: boolean(),
     %% Return the final value or not
     return_val  :: boolean(),
-    %% The current DVV to return.
-    replies     :: [{index_node(), dvv:clock()}],
+    %% The current Object to return.
+    replies     :: [{index_node(), basic_db_object:object()}],
     %% The timeout value for this request.
     timeout     :: non_neg_integer()
 }).
@@ -103,10 +103,11 @@ waiting({ok, ReqID, IndexNode, Response}, State=#state{
                                                 return_val  = ReturnValue,
                                                 min_acks    = Min,
                                                 max_acks    = Max}) ->
-    %% Add the new response to Replies. If it's a not_found or an error, add an empty DVV.
+    %% Add the new response to Replies. If it's a not_found or an error, add an
+    %% empty Object.
     Replies2 =  case Response of
-                    {ok, DVV}   -> [{IndexNode, DVV} | Replies];
-                    _           -> [{IndexNode, dvv:new()} | Replies]
+                    {ok, Object}   -> [{IndexNode, Object} | Replies];
+                    _           -> [{IndexNode, basic_db_object:new()} | Replies]
                 end,
     NewState = State#state{replies = Replies2},
     % test if we have enough responses to respond to the client
@@ -129,10 +130,11 @@ waiting2({ok, ReqID, IndexNode, Response}, State=#state{
                                                 req_id      = ReqID,
                                                 max_acks    = Max,
                                                 replies     = Replies}) ->
-    %% Add the new response to Replies. If it's a not_found or an error, add an empty DVV.
+    %% Add the new response to Replies. If it's a not_found or an error, add an
+    %% empty Object.
     Replies2 =  case Response of
-                    {ok, DVV}   -> [{IndexNode, DVV} | Replies];
-                    _           -> [{IndexNode, dvv:new()} | Replies]
+                    {ok, Object}   -> [{IndexNode, Object} | Replies];
+                    _           -> [{IndexNode, basic_db_object:new()} | Replies]
                 end,
     NewState = State#state{replies = Replies2},
     case length(Replies2) >= Max of
@@ -173,20 +175,21 @@ terminate(_Reason, _SN, _State) ->
 %%% Internal Functions
 %%%===================================================================
 
--spec read_repair(bkey(), [{index_node(), dvv:clock()}], boolean()) -> ok.
+-spec read_repair(bkey(), [{index_node(), basic_db_object:object()}], boolean()) -> ok.
 read_repair(BKey, Replies, AAE_Repair) ->
-    %% Compute the final DVV.
-    FinalDVV = final_dvv_from_replies(Replies),
+    %% Compute the final Object.
+    FinalObject = final_object_from_replies(Replies),
     %% Computed what replica nodes have an outdated version of this key.
-    OutadedNodes = [IN || {IN,DVV} <- Replies,
-                        not ( dvv:equal(FinalDVV, DVV) orelse dvv:less(FinalDVV, DVV) )],
+    OutadedNodes = [IN || {IN,Object} <- Replies,
+                        not ( basic_db_object:equal(FinalObject, Object) orelse
+                              basic_db_object:less(FinalObject, Object) )],
     %% Maybe update the false positive stats for AAE.
     case AAE_Repair of
         false ->
             length(OutadedNodes)==0 andalso
                 lager:info("GET_FSM: AAE REPAIR for ~p nodes, ~p outdated nodes", [length(Replies),length(OutadedNodes)]),
-            PayloadSize = byte_size(term_to_binary(dvv:values(FinalDVV))),
-            MetaSize = byte_size(term_to_binary(dvv:join(FinalDVV))),
+            PayloadSize = byte_size(term_to_binary(basic_db_object:get_values(FinalObject))),
+            MetaSize = byte_size(term_to_binary(basic_db_object:get_context(FinalObject))),
             [rpc:cast(Node, basic_db_entropy_info, key_repair_complete, 
                         [Index, length(OutadedNodes), {PayloadSize,MetaSize}]) ||
                             {{Index, Node},_} <- Replies];
@@ -195,21 +198,23 @@ read_repair(BKey, Replies, AAE_Repair) ->
             ok
     end,
     %% Repair the outdated keys.
-    basic_db_vnode:repair(OutadedNodes, BKey, FinalDVV),
+    basic_db_vnode:repair(OutadedNodes, BKey, FinalObject),
     ok.
 
--spec final_dvv_from_replies([{index_node(), dvv:clock()}]) -> dvv:clock().
-final_dvv_from_replies(Replies) ->
-    DVVs = [DVV || {_,DVV} <- Replies],
-    dvv:sync(DVVs).
+-spec final_object_from_replies([{index_node(), basic_db_object:object()}]) ->
+    basic_db_object:object().
+final_object_from_replies(Replies) ->
+    Object = [Object || {_,Object} <- Replies],
+    basic_db_object:sync(Object).
 
 create_client_reply(From, ReqID, _Replies, _ReturnValue = false) ->
     From ! {ReqID, ok, get, ?OPT_REPAIR};
 create_client_reply(From, ReqID, Replies, _ReturnValue = true) ->
-    FinalDVV = final_dvv_from_replies(Replies),
-    case dvv:values(FinalDVV) == [] of
+    FinalObject = final_object_from_replies(Replies),
+    case basic_db_object:get_values(FinalObject) == [] of
         true -> % no response found; return the context for possibly future writes
-            From ! {ReqID, not_found, get, dvv:join(FinalDVV)};
+            From ! {ReqID, not_found, get, basic_db_object:get_context(FinalObject)};
         false -> % there is at least on value for this key
-            From ! {ReqID, ok, get, {dvv:values(FinalDVV), dvv:join(FinalDVV)}}
+            From ! {ReqID, ok, get, {basic_db_object:get_values(FinalObject),
+                                     basic_db_object:get_context(FinalObject)}}
     end.

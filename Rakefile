@@ -2,10 +2,10 @@ require 'fileutils'
 
 #RIAK_VERSION      = "2.0.2"
 #RIAK_DOWNLOAD_URL = "http://s3.amazonaws.com/downloads.basho.com/riak/2.0/#{RIAK_VERSION}/osx/10.8/riak-#{RIAK_VERSION}-OSX-x86_64.tar.gz"
-NUM_NODES = 4
-NUM_NODES_STR = "4"
 #RING_SIZE = 16
-BACKEND = 'leveldb' #options: bitcask, leveldb, memory.
+# BACKEND = 'leveldb' #options: bitcask, leveldb, memory.
+NUM_NODES = 4
+NUM_NODES_STR = "4\n"
 
 task :default => :help
 
@@ -14,155 +14,176 @@ task :help do
 end
 
 desc "counters # of errors lines in the dev cluster log"
-task :errors do
-  sh "cat dev/dev?/log/error.log dev/dev?/log/crash.log| wc -l" rescue "print errors error"
-  sh "cat dev/dev1/log/error.log dev/dev1/log/crash.log| wc -l" rescue "print errors error"
-  sh "cat dev/dev2/log/error.log dev/dev2/log/crash.log| wc -l" rescue "print errors error"
-  sh "cat dev/dev3/log/error.log dev/dev3/log/crash.log| wc -l" rescue "print errors error"
-  sh "cat dev/dev4/log/error.log dev/dev4/log/crash.log| wc -l" rescue "print errors error"
+task :list_errors do
+  print yellow2
+  print "Total: " + `cat _build/dev/dev?/basic_db/log/error.log _build/dev/dev?/basic_db/log/crash.log | wc -l`
+  (1..NUM_NODES).each do |n|
+    print "Dev#{n}:  " + `cat _build/dev/dev#{n}/basic_db/log/error.log _build/dev/dev#{n}/basic_db/log/crash.log | wc -l`
+  end
+  print reset_color
 end
 
-desc "resets the errors and crash logs"
+desc "resets the logs"
 task :clean_errors do
-  sh "rm -f dev/dev?/log/error.log dev/dev?/log/crash.log"
-  sh "touch dev/dev1/log/error.log dev/dev1/log/crash.log" rescue "print clean error"
-  sh "touch dev/dev2/log/error.log dev/dev2/log/crash.log" rescue "print clean error"
-  sh "touch dev/dev3/log/error.log dev/dev3/log/crash.log" rescue "print clean error"
-  sh "touch dev/dev4/log/error.log dev/dev4/log/crash.log" rescue "print clean error"
+  (1..NUM_NODES).each do |n|
+    `rm -rf _build/dev/dev#{n}/basic_db/log/*`
+    `touch _build/dev/dev#{n}/basic_db/log/error.log _build/dev/dev#{n}/basic_db/log/crash.log`
+  end
+  puts green " ========> Cleaned logs!             "
 end
 
-desc "attach to a basicDB console"
+desc "attach to a BasicDB console"
 task :attach, :node do |t, args|
   args.with_defaults(:node => 1)
-  sh %{dev/dev#{args.node}/bin/basic_db attach} rescue "attach error"
+  sh %{_build/dev/dev#{args.node}/basic_db/bin/basic_db attach}
 end
 
-desc "make a binary release"
+desc "Make a release"
 task :rel do
-  sh "make rel" rescue "make error"
+  puts green "           Making a Release!           "
+  sh "./rebar3 release -d false --overlay_vars config/vars.config" rescue "release error"
 end
 
 desc "install, start and join basic_db nodes"
-task :dev => [:build, :start, :join, :converge]
+task :dev => [:build_dev, :start, :join, :converge]
 
 desc "compile the basic_db source"
 task :compile do
-  sh "make compile-no-deps" rescue "make error"
+  puts green " ========> Compiling!               "
+  print %x<./rebar3 compile>
+  raise red " ========> Failed Compilation!" unless $?.success?
 end
 
-desc "compile everything"
-task :all do
-  sh "make all" rescue "make error"
-end
-
-desc "make the dev basic_db folders"
-task :build => :clear do
-  sh "make stagedevrel" rescue "build dev error"
+desc "Make the dev basic_db folders"
+task :build_dev => :clean do
+  (1..NUM_NODES).each do |n|
+    print yellow %x<mkdir -p _build/dev/dev#{n}>
+    print yellow %x<config/gen_dev dev#{n} config/vars/dev_vars.config.src config/vars/dev#{n}_vars.config>
+    print yellow %x<./rebar3 release -o _build/dev/dev#{n} --overlay_vars config/vars/dev#{n}_vars.config>
+  end
 end
 
 desc "start all basic_db nodes"
 task :start do
+  print yellow `for d in _build/dev/dev*; do $d/basic_db/bin/basic_db start; done`
   # (1..NUM_NODES).each do |n|
-  #   sh %{dev/dev#{n}/bin/basic_db start}
+  #   sh %{_build/dev/dev#{n}/basic_db/bin/basic_db start} rescue "no dev folders"
   # end
-  sh "for d in dev/dev*; do $d/bin/basic_db start; done" rescue "not running"
-  puts "========================================"
-  puts "Dotted Dev Cluster started"
-  puts "========================================"
+  puts green " ========> Dev Cluster Started!           "
+end
+
+desc "stop all basic_db nodes"
+task :stop do
+  print yellow `for d in _build/dev/dev*; do $d/basic_db/bin/basic_db stop; done`
+  # (1..NUM_NODES).each do |n|
+  #   sh %{_build/dev/dev#{n}/basic_db/bin/basic_db stop} rescue "no dev folders"
+  # end
+  puts green " ========> Dev Cluster Stopped!           "
 end
 
 desc "join basic_db nodes (only needed once)"
 task :join do
-  sleep(2)
+  sleep(4)
   (2..NUM_NODES).each do |n|
-      sh %{dev/dev#{n}/bin/basic_db-admin cluster join basic_db1@127.0.0.1} rescue "already joined"
+      print yellow `_build/dev/dev#{n}/basic_db/bin/basic_db-admin cluster join basic_db1@127.0.0.1`
   end
-  sh %{dev/dev1/bin/basic_db-admin cluster plan}
-  sh %{dev/dev1/bin/basic_db-admin cluster commit}
+  puts bg_green "        Dev Cluster Joined!           "
+  print yellow `_build/dev/dev1/basic_db/bin/basic_db-admin cluster plan`
+  print yellow `_build/dev/dev1/basic_db/bin/basic_db-admin cluster commit`
+  puts bg_green "        Dev Cluster Committed!           "
 end
 
 desc "waits for cluster vnode converge to stabilize"
 task :converge do
-  puts "waiting for cluster vnode reshuffling to converge"
+  puts bg_yellow "   Waiting for cluster vnode reshuffling to converge   "
   $stdout.sync = true
-  cmd = `dev/dev1/bin/basic_db-admin member-status | grep "\ \-\-" | wc -l`
-  cmd = `dev/dev1/bin/basic_db-admin member-status | grep "\ \-\-" | wc -l`
   counter = 1
   tries = 0
   continue = true
-  while (cmd.strip != NUM_NODES_STR and continue)
+  while (`_build/dev/dev1/basic_db/bin/basic_db-admin member-status | grep "\ \-\-" | wc -l | xargs` != NUM_NODES_STR and continue)
     print "."
-    sleep(1)
-    cmd = `dev/dev1/bin/basic_db-admin member-status | grep "\ \-\-" | wc -l`
+    sleep(0)
     counter = counter + 1
-    if counter > 5
+    if counter > 4
       tries = tries + 1
       puts ""
       puts "Try # #{tries} of 20"
-      sh %{dev/dev1/bin/basic_db-admin member-status}
+      puts yellow `_build/dev/dev1/basic_db/bin/basic_db-admin member-status`
       counter = 1
     end
-    if tries > 39
+    if tries > 30
       continue = false
     end
   end
-  sh %{dev/dev1/bin/basic_db-admin member-status}
-  if continue 
-    puts "READY SET GO!"
+  puts yellow `_build/dev/dev1/basic_db/bin/basic_db-admin member-status`
+  if continue
+    puts bg_green "                                            "
+    puts bg_green "               READY SET GO!                "
+    puts bg_green "                                            "
   else
-    puts "Cluster is not converging :("
+    puts bg_red "                                            "
+    puts bg_red "         Cluster is not converging :(       "
+    puts bg_red "                                            "
   end
 end
 
 desc "basic_db-admin member-status"
 task :member_status do
-  sh %{dev/dev1/bin/basic_db-admin member-status}
-end
-
-desc "stop all basic_db nodes"
-task :stop do
-  # (1..NUM_NODES).each do |n|
-  sh "for d in dev/dev*; do $d/bin/basic_db stop; done" rescue "not running"
-  # end
-  puts "========================================"
-  puts "Dotted Dev Cluster stopped"
-  puts "========================================"
+  puts yellow `_build/dev/dev1/basic_db/bin/basic_db-admin member-status`
 end
 
 desc "restart all basic_db nodes"
-task :restart => [:stop, :compile, :start]
+task :restart => [:stop, :compile, :delete_storage, :clean_errors, :start, :list_errors, :attach]
 
-desc "clear data from all basic_db nodes"
-  task :clear => :stop do
+desc "restart all basic_db nodes"
+task :restart_with_storage => [:stop, :compile, :start]
+
+desc "clean data from all basic_db nodes"
+  task :clean => :stop do
     (1..NUM_NODES).each do |n|
-      sh %{rm -rf dev/dev#{n}}
+      `rm -rf _build/dev/dev#{n}`
   end
+  puts green " ========> Dev Cluster Cleaned!           "
 end
 
 desc "ping all basic_db nodes"
 task :ping do
   (1..NUM_NODES).each do |n|
-      sh %{dev/dev#{n}/bin/basic_db ping}
+      sh %{_build/dev/dev#{n}/basic_db/bin/basic_db ping}
   end
 end
 
 desc "basic_db-admin test"
 task :test do
   (1..NUM_NODES).each do |n|
-    sh %{dev/dev#{n}/bin/basic_db-admin test}
+    sh %{_build/dev/dev#{n}/basic_db/bin/basic_db-admin test}
   end
 end
 
 desc "basic_db-admin status"
 task :status do
-  sh %{dev/dev1/bin/basic_db-admin  status}
+  sh %{_build/dev/dev1/basic_db/bin/basic_db-admin  status}
 end
 
 desc "basic_db-admin ring-status"
 task :ring_status do
-  sh %{dev/dev1/bin/basic_db-admin  ring-status}
+  sh %{_build/dev/dev1/basic_db/bin/basic_db-admin  ring-status}
 end
 
+desc "plot local dev nodes stats"
+task :local_plot do
+  sh %{python benchmarks/plot.py}
+end
+
+desc "deletes the database storage to start from scratch"
+task :delete_storage do
+  (1..NUM_NODES).each do |n|
+    print yellow %x<rm -rf _build/dev/dev#{n}/basic_db/data/vnode_state>
+    print yellow %x<rm -rf _build/dev/dev#{n}/basic_db/data/objects>
+    # sh %{rm -rf dev/dev#{n}/log}
+  end
+  puts green " ========> Dev Storage Deleted!           "
+end
 
 # task :copy_riak do
 #   (1..NUM_NODES).each do |n|
@@ -176,3 +197,69 @@ end
 #    system %(echo 'storage_backend = #{BACKEND}' >> riak#{n}/etc/riak.conf)
 #   end
 # end
+
+def colorize(text, color_code)
+  "\033[#{color_code}m#{text}\033[0m"
+end
+
+{
+  :black    => 30,
+  :red      => 31,
+  :green    => 32,
+  :yellow   => 33,
+  :blue     => 34,
+  :magenta  => 35,
+  :cyan     => 36,
+  :white    => 37
+}.each do |key, color_code|
+  define_method key do |text|
+    colorize(text, color_code)
+  end
+end
+
+def colorize_bg(text, color_code)
+  if color_code == 41 ## red bg in white fg
+    "\033[37;#{color_code}m\033[1m#{text}\033[0m"
+  else
+    "\033[30;#{color_code}m\033[1m#{text}\033[0m"
+  end
+end
+
+{
+  :bg_black    => 40,
+  :bg_red      => 41,
+  :bg_green    => 42,
+  :bg_yellow   => 43,
+  :bg_blue     => 44,
+  :bg_magenta  => 45,
+  :bg_cyan     => 46,
+  :bg_white    => 47
+}.each do |key, color_code|
+  define_method key do |text|
+    colorize_bg(text, color_code)
+  end
+end
+
+
+def colorize2(color_code)
+  "\033[#{color_code}m"
+end
+
+{
+  :black2    => 30,
+  :red2      => 31,
+  :green2    => 32,
+  :yellow2   => 33,
+  :blue2     => 34,
+  :magenta2  => 35,
+  :cyan2     => 36,
+  :white2    => 37
+}.each do |key, color_code|
+  define_method key do
+    colorize2(color_code)
+  end
+end
+
+def reset_color()
+  "\033[0m"
+end

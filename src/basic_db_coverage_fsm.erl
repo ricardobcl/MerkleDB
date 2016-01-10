@@ -17,7 +17,7 @@
 
 start(Request, Timeout) ->
     ReqId = basic_db_utils:make_request_id(),
-    {ok, _} = basic_db_coverage_fsm_sup:start_fsm([ReqId, self(), Request, Timeout]),
+    {ok, _} = basic_db_coverage_fsm_sup:start_coverage_fsm([ReqId, self(), Request, Timeout]),
     receive
         {ReqId, Val} -> Val
     end.

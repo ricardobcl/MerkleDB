@@ -67,7 +67,7 @@
          reconcile/2
         ]).
 
--export_type([clock/0, vector/0, id/0, value/0]).
+-export_type([dvv/0, clock/0, vector/0, id/0, value/0]).
 
 % % @doc
 %% STRUCTURE details:
@@ -76,6 +76,7 @@
 %%      * the values in each triple of entries() are causally ordered and each new value goes to the head of the list
 
 -type clock() :: {} | {entries(), values()}.
+-type dvv() :: clock().
 -type vector() :: [{id(), counter()}].
 -type entries() :: [{id(), counter(), values()}].
 -type id() :: any().

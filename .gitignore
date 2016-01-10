@@ -1,8 +1,4 @@
-*.beam
-.eunit
-.rebar
-deps/*
-ebin/*
-rel/basic_db
-dev
-apps/basic_db/src/*
+benchmarks/tests/*
+benchmarks/*.out
+benchmarks/*.svg
+_build/*

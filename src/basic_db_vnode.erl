@@ -25,8 +25,8 @@
          restart/2,
          read/3,
          repair/3,
-         write/6,
-         replicate/4,
+         write/7,
+         replicate/2,
          hashtree_pid/1,
          rehash/3,
          request_hashtree_pid/1,
@@ -42,24 +42,29 @@
 -record(state, {
         % node id used for in logical clocks
         id          :: vnode_id(),
+        % the atom representing the vnode id
+        atom_id     :: atom(),
         % index on the consistent hashing ring
         index       :: index(),
-        % key->value store, where the value is a DVV (values + logical clock)
+        % key->value store, where the value is a object (values + logical clock)
         storage     :: basic_db_storage:storage(),
         % server that handles the hashtrees for this vnode
         hashtrees   :: pid(),
         % DETS table that stores in disk the vnode state
         dets        :: dets(),
         % a flag to collect or not stats
-        stats       :: boolean()
+        stats       :: boolean(),
+        % interval time between reports on this vnode
+        report_interval :: non_neg_integer()
     }).
 
 -type state() :: #state{}.
 
 -define(MASTER, basic_db_vnode_master).
--define(REPORT_TICK_INTERVAL, 1000). % interval between report stats
 -define(VNODE_STATE_FILE, "basic_db_vnode_state").
 -define(VNODE_STATE_KEY, "basic_db_vnode_state_key").
+-define(ETS_DELETE,    1).
+-define(ETS_WRITE,     3).
 
 %%%===================================================================
 %%% API
@@ -88,22 +93,22 @@ read(ReplicaNodes, ReqID, BKey) ->
                                    ?MASTER).
 
 
-repair(OutdatedNodes, BKey, DVV) ->
+repair(OutdatedNodes, BKey, Object) ->
     riak_core_vnode_master:command(OutdatedNodes,
-                                   {repair, BKey, DVV},
+                                   {repair, BKey, Object},
                                    {fsm, undefined, self()},
                                    ?MASTER).
 
-write(Coordinator, ReqID, Op, BKey, Value, Context) ->
+write(Coordinator, ReqID, Op, BKey, Value, Context, FSMTime) ->
     riak_core_vnode_master:command(Coordinator,
-                                   {write, ReqID, Op, BKey, Value, Context},
+                                   {write, ReqID, Op, BKey, Value, Context, FSMTime},
                                    {fsm, undefined, self()},
                                    ?MASTER).
 
 
-replicate(ReplicaNodes, ReqID, BKey, DVV) ->
+replicate(ReplicaNodes, Args) ->
     riak_core_vnode_master:command(ReplicaNodes,
-                                   {replicate, ReqID, BKey, DVV},
+                                   {replicate, Args},
                                    {fsm, undefined, self()},
                                    ?MASTER).
 
@@ -150,6 +155,7 @@ rehash(Preflist, Bucket, Key) ->
 %%%===================================================================
 
 init([Index]) ->
+    process_flag(priority, high),
     % try to read the vnode state in the DETS file, if it exists
     {Dets, NodeId2} =
         case read_vnode_state(Index) of
@@ -173,18 +179,20 @@ init([Index]) ->
                 {S, NodeId2}
         end,
     % create an ETS to store keys written and deleted in this node (for stats)
-    create_ets_all_keys(NodeId3),
+    AtomID = create_ets_all_keys(NodeId3),
     % schedule a periodic reporting message (wait 2 seconds initially)
     schedule_report(2000),
     % create the state
     State = #state{
         % for now, lets use the index in the consistent hash as the vnode ID
         id          = NodeId3,
+        atom_id     = AtomID,
         index       = Index,
         storage     = Storage,
         hashtrees   = undefined,
         dets        = Dets,
-        stats       = true
+        stats                   = application:get_env(basic_db, do_stats, ?DEFAULT_DO_STATS),
+        report_interval         = ?REPORT_TICK_INTERVAL
     },
     {ok, maybe_create_hashtrees(State)}.
 
@@ -205,9 +213,9 @@ handle_command({read, ReqID, BKey}, _Sender, State) ->
                 lager:error("Error reading a key from storage (command read): ~p", [Error]),
                 % return the error
                 {error, Error};
-            DVV ->
+            Object ->
                 % get and fill the causal history of the local object
-                {ok, DVV}
+                {ok, Object}
         end,
     % Optionally collect stats
     case State#state.stats of
@@ -218,17 +226,15 @@ handle_command({read, ReqID, BKey}, _Sender, State) ->
     {reply, {ok, ReqID, IndexNode, Response}, State};
 
 
-handle_command({repair, BKey, NewDVV}, Sender, State) ->
-    {reply, {ok, dummy_req_id}, State2} = 
-        handle_command({replicate, dummy_req_id, BKey, NewDVV}, Sender, State),
-    {noreply, State2};
+handle_command({repair, BKey, NewObject}, Sender, State) ->
+    handle_command({replicate, {dummy_req_id, BKey, NewObject, ?DEFAULT_NO_REPLY}}, Sender, State);
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% WRITING
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-handle_command({write, ReqID, Operation, BKey, Value, Context}, _Sender, State) ->
+handle_command({write, ReqID, Operation, BKey, Value, Context, FSMTime}, _Sender, State) ->
 
     % debug
     RN = basic_db_utils:replica_nodes(BKey),
@@ -240,23 +246,25 @@ handle_command({write, ReqID, Operation, BKey, Value, Context}, _Sender, State) 
             lager:info("(1)IxNd: ~p work vnode for key ~p in ~p", [This, BKey, RN])
     end,
 
+    Now = os:timestamp(),
     % get and fill the causal history of the local key
-    DiskDVV = guaranteed_get(BKey, State),
-    % test if this is a delete; if not, add dot-value to the DVV container
-    % update the new DVVSet with the local server DVVSet and the server ID
-    NewDVV = case Operation of
+    DiskObject = guaranteed_get(BKey, State),
+    % test if this is a delete; if not, add dot-value to the Object container
+    % update the new Object with the local server Object and the server ID
+    NewObject0 = case Operation of
             ?DELETE_OP  -> % DELETE
-                ClientDVV = dvv:new(Context, []),
-                dvv:delete(ClientDVV, DiskDVV, State#state.id);
+                ClientObject = basic_db_object:new(Context, []),
+                basic_db_object:delete(ClientObject, DiskObject, State#state.id);
             ?WRITE_OP   -> % PUT
-                % create a new DVVSet for the new value V, using the client's context
-                ClientDVV = dvv:new(Context, Value),
-                dvv:update(ClientDVV, DiskDVV, State#state.id)
+                % create a new Object for the new value V, using the client's context
+                ClientObject = basic_db_object:new(Context, Value),
+                basic_db_object:update(ClientObject, DiskObject, State#state.id)
         end,
-    % store the DVV
-    save_kv(BKey, NewDVV, State),
-    % update the hashtree with the new dvv
-    update_hashtree(BKey, NewDVV, State),
+    NewObject = basic_db_object:set_fsm_time(FSMTime, NewObject0),
+    % store the Object
+    save_kv(BKey, NewObject, State, Now),
+    % update the hashtree with the new basic_db_object
+    update_hashtree(BKey, NewObject, State),
     % maybe_cache_object(BKey, Obj, State),
     % Optionally collect stats
     case State#state.stats of
@@ -264,10 +272,10 @@ handle_command({write, ReqID, Operation, BKey, Value, Context}, _Sender, State) 
         false -> ok
     end,
     % return the updated node state
-    {reply, {ok, ReqID, NewDVV}, State};
+    {reply, {ok, ReqID, NewObject}, State};
 
 
-handle_command({replicate, ReqID, BKey, NewDVV}, _Sender, State) ->
+handle_command({replicate, {ReqID, BKey, NewObject, NoReply}}, _Sender, State) ->
 
     % debug
     RN = basic_db_utils:replica_nodes(BKey),
@@ -279,19 +287,20 @@ handle_command({replicate, ReqID, BKey, NewDVV}, _Sender, State) ->
             lager:info("(2)IxNd: ~p work vnode for key ~p in ~p", [This, BKey, RN])
     end,
 
-    % get the local DVV
-    DiskDVV = guaranteed_get(BKey, State),
+    Now = os:timestamp(),
+    % get the local Object
+    DiskObject = guaranteed_get(BKey, State),
     % synchronize both objects
-    FinalDVV = dvv:sync(NewDVV, DiskDVV),
+    FinalObject = basic_db_object:sync(NewObject, DiskObject),
     % test if the FinalDCC has newer information
-    case dvv:equal(FinalDVV, DiskDVV) of
+    case basic_db_object:equal(FinalObject, DiskObject) of
         true ->
             lager:debug("Replicated object is ignored (already seen)");
         false ->
-            % save the new DVV
-            save_kv(BKey, FinalDVV, State),
-            % update the hashtree with the new dvv
-            update_hashtree(BKey, FinalDVV, State)
+            % save the new Object
+            save_kv(BKey, FinalObject, State, Now),
+            % update the hashtree with the new basic_db_object
+            update_hashtree(BKey, FinalObject, State)
     end,
     % Optionally collect stats
     case State#state.stats of
@@ -299,7 +308,10 @@ handle_command({replicate, ReqID, BKey, NewDVV}, _Sender, State) ->
         false -> ok
     end,
     % return the updated node state
-    {reply, {ok, ReqID}, State};
+    case NoReply of
+        true  -> {noreply, State};
+        false -> {reply, {ok, ReqID}, State}
+    end;
 
 
 
@@ -334,9 +346,9 @@ handle_command({rehash, BKey}, _, State) ->
         {error, Error} ->
             % some unexpected error
             lager:error("Error reading a key from storage (guaranteed GET): ~p", [Error]);
-        DVV ->
+        Object ->
             lager:debug("Rehash Key: updating hash in the HT"),
-            update_hashtree(BKey, DVV, State)
+            update_hashtree(BKey, Object, State)
     end,
     {noreply, State};
 
@@ -350,8 +362,8 @@ handle_command({rehash, BKey}, _, State) ->
 handle_command({restart, ReqID}, _Sender, State) ->
     OldVnodeID = State#state.id,
     NewVnodeID = new_vnode_id(State#state.index),
-    true = ets:delete(get_ets_id(OldVnodeID)),
-    create_ets_all_keys(NewVnodeID),
+    true = delete_ets_all_keys(State),
+    NewAtomID = create_ets_all_keys(NewVnodeID),
     {ok, Storage1} = basic_db_storage:drop(State#state.storage),
     ok = basic_db_storage:close(Storage1),
     % open the storage backend for the key-values of this vnode
@@ -361,7 +373,9 @@ handle_command({restart, ReqID}, _Sender, State) ->
     basic_db_index_hashtree:clear(State#state.hashtrees),
     % State2 = maybe_create_hashtrees(State#state{id=NewVnodeID, storage=NewStorage}),
     {reply, {ok, ReqID, OldVnodeID, NewVnodeID},
-        State#state{id=NewVnodeID, storage=NewStorage}};
+        State#state{id          = NewVnodeID,
+                    atom_id     = NewAtomID,
+                    storage     = NewStorage}};
 
 %% Sample command: respond to a ping
 handle_command(ping, _Sender, State) ->
@@ -391,7 +405,24 @@ handle_command(Message, _Sender, State) ->
 %%%===================================================================
 
 handle_coverage(vnode_state, _KeySpaces, {_, RefId, _}, State) ->
-    {reply, {RefId, {ok, State}}, State};
+    {reply, {RefId, {ok, vs, State}}, State};
+
+handle_coverage(replication_latency, _KeySpaces, {_, RefId, _}, State) ->
+    Latencies = compute_replication_latency(State#state.atom_id),
+    {reply, {RefId, {ok, replication_latency, Latencies}}, State};
+
+handle_coverage(all_current_dots, _KeySpaces, {_, RefId, _}, State) ->
+    % Dots = ets_get_all_dots(State#state.atom_id),
+    Dots = storage_get_all_dots(State#state.storage),
+    {reply, {RefId, {ok, all_current_dots, Dots}}, State};
+
+handle_coverage(deleted_keys, _KeySpaces, {_, RefId, _}, State) ->
+    ADelKeys = ets_get_deleted(State#state.atom_id),
+    {reply, {RefId, {ok, dk, ADelKeys}}, State};
+
+handle_coverage(final_written_keys, _KeySpaces, {_, RefId, _}, State) ->
+    WrtKeys = ets_get_written(State#state.atom_id),
+    {reply, {RefId, {ok, wk, WrtKeys}}, State};
 
 % handle_coverage({list_streams, Username}, _KeySpaces, {_, RefId, _}, State) ->
 %     Streams = lists:sort(list_streams(State, Username)),
@@ -425,9 +456,13 @@ handle_info(retry_create_hashtree, State) ->
     {ok, State};
 
 %% Report Tick
-handle_info(report_tick, State) ->
-    State1 = maybe_tick(State),
-    {ok, State1};
+handle_info(report_tick, State=#state{stats=false}) ->
+    schedule_report(State#state.report_interval),
+    {ok, State};
+handle_info(report_tick, State=#state{stats=true}) ->
+    {_, NextState} = report_stats(State),
+    schedule_report(State#state.report_interval),
+    {ok, NextState};
 
 handle_info({'DOWN', _, _, Pid, _}, State=#state{hashtrees=Pid}) ->
     State2 = State#state{hashtrees=undefined},
@@ -453,8 +488,8 @@ handle_handoff_command(?FOLD_REQ{foldfun=FoldFun, acc0=Acc0}, _Sender, State) ->
     Acc = basic_db_storage:fold(State#state.storage, WrapperFun, Acc0),
     {reply, Acc, State};
 
-handle_handoff_command(Cmd, Sender, State) when 
-        element(1, Cmd) == replicate orelse 
+handle_handoff_command(Cmd, Sender, State) when
+        element(1, Cmd) == replicate orelse
         element(1, Cmd) == repair ->
     case handle_command(Cmd, Sender, State) of
         {noreply, State2} ->
@@ -464,13 +499,13 @@ handle_handoff_command(Cmd, Sender, State) when
     end;
 
 %% For coordinating writes, do it locally and forward the replication
-handle_handoff_command(Cmd={write, ReqID, _, Key, _, _}, Sender, State) ->
+handle_handoff_command(Cmd={write, ReqID, _, Key, _, _, _}, Sender, State) ->
     % do the local coordinating write
-    {reply, {ok, ReqID, NewDVV}, State2} = handle_command(Cmd, Sender, State),
+    {reply, {ok, ReqID, NewObject}, State2} = handle_command(Cmd, Sender, State),
     % send the ack to the PUT_FSM
-    riak_core_vnode:reply(Sender, {ok, ReqID, NewDVV}),
+    riak_core_vnode:reply(Sender, {ok, ReqID, NewObject}),
     % create a new request to forward the replication of this new DCC/object
-    NewCommand = {replicate, ReqID, Key, NewDVV},
+    NewCommand = {replicate, {ReqID, Key, NewObject, ?DEFAULT_NO_REPLY}},
     {forward, NewCommand, State2};
 
 %% Handle all other commands locally (only gets?)
@@ -490,9 +525,9 @@ handoff_finished(_TargetNode, State) ->
 handle_handoff_data(Data, State) ->
     {BKey, Obj} = basic_db_utils:decode_kv(Data),
     % NewObj = guaranteed_get(BKey, State),
-    % FinalObj = dvv:sync(Obj, NewObj),
+    % FinalObj = basic_db_object:sync(Obj, NewObj),
     % ok = basic_db_storage:put(State#state.storage, BKey, FinalObj),
-    {reply, {ok, _}, State2} = handle_command({replicate, dummy_req_id, BKey, Obj}, undefined, State),
+    {reply, {ok, _}, State2} = handle_command({replicate, {dummy_req_id, BKey, Obj, ?DEFAULT_NO_REPLY}}, undefined, State),
     {reply, ok, State2}.
 
 encode_handoff_item(BKey, Val) ->
@@ -521,6 +556,7 @@ delete(State) ->
         HT ->
             basic_db_index_hashtree:destroy(HT)
     end,
+    true = delete_ets_all_keys(State),
     {ok, State#state{hashtrees=undefined, storage=S}}.
 
 
@@ -537,22 +573,24 @@ terminate(_Reason, State) ->
 %% Private
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-% @doc Returns the value (DVV) associated with the Key.
+% @doc Returns the value (Object) associated with the Key.
 % If the key does not exists or for some reason, the storage returns an
-% error, return an empty DVV.
+% error, return an empty Object.
 guaranteed_get(BKey, State) ->
     case basic_db_storage:get(State#state.storage, BKey) of
         {error, not_found} ->
             % there is no key K in this node
-            dvv:new();
+            Obj = basic_db_object:new(),
+            basic_db_object:set_fsm_time(ets_get_fsm_time(State#state.atom_id, BKey), Obj);
         {error, Error} ->
             % some unexpected error
             lager:error("Error reading a key from storage (guaranteed GET): ~p", [Error]),
             % assume that the key was lost, i.e. it's equal to not_found
-            dvv:new();
-        DVV ->
+            Obj = basic_db_object:new(),
+            basic_db_object:set_fsm_time(ets_get_fsm_time(State#state.atom_id, BKey), Obj);
+        Object ->
             % get the local object
-            DVV
+            Object
     end.
 
 
@@ -560,20 +598,24 @@ guaranteed_get(BKey, State) ->
 open_storage(Index) ->
     % get the preferred backend in the configuration file, defaulting to ETS if
     % there is no preference.
-    Backend = case app_helper:get_env(basic_db, storage_backend) of
-        "leveldb"   -> {backend, leveldb};
-        "ets"       -> {backend, ets};
-        _           -> {backend, ets}
+    {Backend, Options} = case application:get_env(basic_db, storage_backend, ets) of
+        leveldb   -> {{backend, leveldb}, []};
+        ets       -> {{backend, ets}, []};
+        bitcask   -> {{backend, bitcask}, [{db_opts,[
+                read_write,
+                {sync_strategy, application:get_env(basic_db, bitcask_io_sync, none)},
+                {io_mode, application:get_env(basic_db, bitcask_io_mode, erlang)},
+                {merge_window, application:get_env(basic_db, bitcask_merge_window, never)}]}]}
     end,
     lager:info("Using ~p for vnode ~p.",[Backend,Index]),
     % give the name to the backend for this vnode using its position in the ring.
     DBName = filename:join("data/objects/", integer_to_list(Index)),
-    {ok, Storage} = basic_db_storage:open(DBName, [Backend]),
+    {ok, Storage} = basic_db_storage:open(DBName, Backend, Options),
     {Backend, Storage}.
 
 % @doc Close the key-value backend.
 close_all(undefined) -> ok;
-close_all(_State=#state{id          = Id,
+close_all(State=#state{id          = Id,
                         storage     = Storage,
                         dets        = Dets } ) ->
     case basic_db_storage:close(Storage) of
@@ -582,6 +624,7 @@ close_all(_State=#state{id          = Id,
             lager:warning("Error on closing storage: ~p",[Reason])
     end,
     ok = save_vnode_state(Dets, Id),
+    true = delete_ets_all_keys(State),
     ok = dets:close(Dets).
 
 
@@ -656,21 +699,11 @@ max_hashtree_tokens() ->
 
 
 
--spec maybe_tick(state()) -> state().
-maybe_tick(State=#state{stats=false}) ->
-    schedule_report(?REPORT_TICK_INTERVAL),
-    State;
-maybe_tick(State=#state{stats=true}) ->
-    {_, NextState} = report_stats(State),
-    schedule_report(?REPORT_TICK_INTERVAL),
-    NextState.
-
 -spec schedule_report(non_neg_integer()) -> ok.
 schedule_report(Interval) ->
     %% Perform tick every X seconds
     erlang:send_after(Interval, self(), report_tick),
     ok.
-
 
 report_stats(State) ->
     ok = save_vnode_state(State#state.dets, State#state.id),
@@ -689,16 +722,22 @@ report_stats(State) ->
     {ok, State}.
 
 
-save_kv(Key={_,_}, DVV, State) ->
-    save_kv(Key, DVV, State, true).
-save_kv(Key={_,_}, DVV, State, ETS) ->
-    case dvv:values(DVV) of
+save_kv(Key={_,_}, Object, State, Now) ->
+    % ets_get_issued_deleted(State#state.atom_id).
+    save_kv(Key, Object, State, Now, true).
+save_kv(Key={_,_}, Object, S=#state{atom_id=ID}, Now, ETS) ->
+    case basic_db_object:get_values(Object) of
         [] ->
-            ETS andalso ets:insert(get_ets_id(State#state.id), {Key, 0});
+            ETS andalso ets_set_status(ID, Key, ?ETS_DELETE),
+            ETS andalso ets_set_dots(ID, Key, []);
         _ ->
-            ETS andalso ets:insert(get_ets_id(State#state.id), {Key, 1})
+            ETS andalso ets_set_status(ID, Key, ?ETS_WRITE),
+            ETS andalso ets_set_dots(ID, Key, get_value_dots_for_ets(Object))
     end,
-    basic_db_storage:put(State#state.storage, Key, DVV).
+    ETS andalso notify_write_latency(basic_db_object:get_fsm_time(Object), Now),
+    ETS andalso ets_set_write_time(ID, Key, Now),
+    ETS andalso ets_set_fsm_time(ID, Key, basic_db_object:get_fsm_time(Object)),
+    basic_db_storage:put(S#state.storage, Key, Object).
 
 get_ets_id(Id) ->
     list_to_atom(lists:flatten(io_lib:format("~p", [Id]))).
@@ -741,12 +780,85 @@ get_written_keys(Id) ->
 
 new_vnode_id(Index) ->
     % generate a new vnode ID for now
-    <<A:32, B:32, C:32>> = crypto:rand_bytes(12),
-    random:seed({A,B,C}),
+    basic_db_utils:maybe_seed(),
     % get a random index withing the length of the list
     {Index, random:uniform(999999999999)}.
 
 create_ets_all_keys(NewVnodeID) ->
     ((ets:info(get_ets_id(NewVnodeID)) /= undefined) orelse
         ets:new(get_ets_id(NewVnodeID), [named_table, public, set, {write_concurrency, false}])).
+
+delete_ets_all_keys(#state{atom_id=AtomID}) ->
+    _ = ((ets:info(AtomID) =:= undefined) andalso ets:delete(AtomID)),
+    true.
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ETS functions that store some stats and benchmark info
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+% @doc Returns a pair: first is the number of keys present in storage,
+% the second is the number of keys completely deleted from storage.
+% ets_get_all_keys(State) ->
+%     ets:foldl(fun
+%         ({Key,St,_,_,_,_}, {Others, Deleted}) when St =:= ?ETS_DELETE -> {Others, [Key|Deleted]};
+%         ({Key,St,_,_,_,_}, {Others, Deleted}) when St =/= ?ETS_DELETE -> {[Key|Others], Deleted}
+%     end, {[],[]}, State#state.atom_id).
+
+ets_set_status(Id, Key, Status)     -> ensure_tuple(Id, Key), ets:update_element(Id, Key, {2, Status}).
+% ets_set_write_time(_, _, undefined) -> true;
+ets_set_write_time(Id, Key, Time)   -> ensure_tuple(Id, Key), ets:update_element(Id, Key, {4, Time}).
+ets_set_fsm_time(_, _, undefined)   -> true;
+ets_set_fsm_time(Id, Key, Time)     -> ensure_tuple(Id, Key), ets:update_element(Id, Key, {5, Time}).
+ets_set_dots(Id, Key, Dots)         -> ensure_tuple(Id, Key), ets:update_element(Id, Key, {6, Dots}).
+
+notify_write_latency(undefined, _WriteTime) -> ok;
+notify_write_latency(FSMTime, WriteTime) ->
+    Delta = timer:now_diff(WriteTime, FSMTime)/1000,
+    basic_db_stats:notify({gauge, write_latency}, Delta).
+
+ensure_tuple(Id, Key) ->
+    U = undefined,
+    not ets:member(Id, Key) andalso ets:insert(Id, {Key,U,U,U,U,U}).
+
+% ets_get_status(Id, Key)     -> ets:lookup_element(Id, Key, 2).
+% ets_get_write_time(Id, Key) -> ensure_tuple(Id, Key), ets:lookup_element(Id, Key, 4).
+ets_get_fsm_time(Id, Key)   -> ensure_tuple(Id, Key), ets:lookup_element(Id, Key, 5).
+% ets_get_dots(Id, Key)       -> ets:lookup_element(Id, Key, 6).
+
+ets_get_deleted(Id)  -> 
+    ets:select(Id, [{{'$1', '$2', '_', '_', '_', '_'}, [{'==', '$2', ?ETS_DELETE}], ['$1'] }]).
+ets_get_written(Id)   -> 
+    ets:select(Id, [{{'$1', '$2', '_', '_', '_', '_'}, [{'==', '$2', ?ETS_WRITE}], ['$1'] }]).
+
+compute_replication_latency(Id) ->
+    ets:foldl(fun
+        ({_,_,_,_,undefined,_}, Acc) -> Acc; ({_,_,_,undefined,_,_}, Acc) -> Acc;
+        ({_,_,_,Write,Fsm,_}, Acc) -> [timer:now_diff(Write, Fsm)/1000 | Acc]
+    end, [], Id).
+
+% ets_get_all_dots(EtsId) ->
+%     ets:foldl(fun
+%         ({Key,?ETS_DELETE   ,_,_,_,Dots}, {Others, Deleted}) -> {Others, [{Key,lists:sort(Dots)}|Deleted]};
+%         ({Key,?ETS_WRITE    ,_,_,_,Dots}, {Others, Deleted}) -> {[{Key,lists:sort(Dots)}|Others], Deleted};
+%         ({Key,undefined,_,_,_,undefined},       {Others, Deleted}) -> {Others, [{Key,undefined}|Deleted]}
+%     end, {[],[]}, EtsId).
+
+storage_get_all_dots(Storage) ->
+    Fun = fun({Key, Object}, {Others, Deleted}) ->
+        DCC = basic_db_object:get_container(Object),
+        {[{Key,DCC}|Others], Deleted}
+    end,
+    basic_db_storage:fold(Storage, Fun, {[],[]}).
+
+get_value_dots_for_ets(Object) ->
+    {Entries, _Anon} = basic_db_object:get_container(Object),
+    dvv_entries_to_dots(Entries, []).
+
+dvv_entries_to_dots([], Acc) -> Acc;
+dvv_entries_to_dots([{_I,_C,[]} | T], Acc) ->
+    dvv_entries_to_dots(T, Acc);
+dvv_entries_to_dots([{I,C,[_|V]} | T], Acc) ->
+    dvv_entries_to_dots([{I,C-1,V} | T], [{I,C} | Acc]).
 

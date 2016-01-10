@@ -60,7 +60,7 @@ restart(timeout, State=#state{  req_id      = ReqId,
 
 ack(timeout, State=#state{ req_id = ReqID, from = From}) ->
     lager:warning("Restart Fsm: timed-out waiting for restarting vnode."),
-    From ! {ReqID, timeout},
+    From ! {ReqID, timeout, restart},
     {stop, timeout, State};
 ack({ok, ReqID, OldVnodeID, NewVnodeID}, State=#state{req_id = ReqID, from = From}) ->
     lager:info("Restart Fsm: old ~p new ~p.",[OldVnodeID, NewVnodeID]),

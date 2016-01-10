@@ -2,7 +2,7 @@
 {application, basic_db,
  [
   {description, "BasicDB: a Distributed Key-Value Store similar to Riak/Dynamo"},
-  {vsn, "0.1.0"},
+  {vsn, "1.0.0"},
   {registered, []},
   {applications, [
                   kernel,
@@ -12,9 +12,6 @@
                  ]},
   {mod, { basic_db_app, []}},
   {env, [
-            %% Used ETS as the default backend
-            {storage_backend, "ets"},
-
             %% Enable active anti-entropy by default
             %% With debugging
             {anti_entropy, {on, []}}

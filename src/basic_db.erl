@@ -8,7 +8,14 @@
          vstate/0,
          vstate/1,
          vstates/0,
+         check_consistency/0,
+         replication_latencies/0,
          new_client/0,
+         set_sync_interval/1,
+         set_sync_interval/2,
+         set_kill_node_rate/1,
+         set_kill_node_rate/2,
+         set_vnodes_stats/1,
          new_client/1,
          restart/0,
          restart/1,
@@ -51,6 +58,50 @@ ping() ->
     [{IndexNode, _Type}] = PrefList,
     riak_core_vnode_master:sync_spawn_command(IndexNode, ping, basic_db_vnode_master).
 
+
+%% @doc Set the rate at which nodes sync with each other in milliseconds.
+set_sync_interval(SyncInterval) ->
+    {ok, LocalNode} = new_client(),
+    set_sync_interval(SyncInterval, LocalNode).
+
+set_sync_interval(SyncInterval, {?MODULE, TargetNode}) ->
+    case node() of
+        % if this node is already the target node
+        TargetNode ->
+            basic_db_entropy_manager:set_sync_interval(SyncInterval);
+        % this is not the target node
+        _ ->
+            proc_lib:spawn_link(TargetNode, basic_db_entropy_manager, set_sync_interval, [SyncInterval])
+    end.
+
+%% @doc Set the rate at which nodes fail (reset) in milliseconds.
+set_kill_node_rate(KillRate) ->
+    {ok, LocalNode} = new_client(),
+    set_kill_node_rate(KillRate, LocalNode).
+
+set_kill_node_rate(KillRate, {?MODULE, TargetNode}) ->
+    case node() of
+        % if this node is already the target node
+        TargetNode ->
+            basic_db_entropy_manager:set_kill_node_interval(KillRate);
+        % this is not the target node
+        _ ->
+            proc_lib:spawn_link(TargetNode, basic_db_entropy_manager, set_kill_node_interval, [KillRate])
+    end.
+
+set_vnodes_stats(Bool) ->
+    {ok, RingBin} = riak_core_ring_manager:get_chash_bin(),
+    case chashbin:to_list(RingBin) of
+        [] ->
+            lager:warning("No vnodes to change strip interval, on node ~p", [node()]),
+            error;
+        Vnodes ->
+             riak_core_vnode_master:command(
+                        Vnodes,
+                        {set_stats, Bool},
+                        {raw, undefined, self()},
+                        basic_db_vnode_master)
+    end.
 
 %% @doc Reset a random vnode.
 restart() ->
@@ -131,6 +182,18 @@ new_client(Node) ->
         pong -> {ok, {?MODULE, Node}}
     end.
 
+%% @doc
+check_consistency() ->
+    ReqID = basic_db_utils:make_request_id(),
+    Request = [ReqID, self(), all_current_dots, ?DEFAULT_TIMEOUT],
+    {ok, _} = basic_db_coverage_fsm_sup:start_coverage_fsm(Request),
+    wait_for_reqid(ReqID, ?DEFAULT_TIMEOUT).
+
+replication_latencies() ->
+    ReqID = basic_db_utils:make_request_id(),
+    Request = [ReqID, self(), replication_latency, ?DEFAULT_TIMEOUT],
+    {ok, _} = basic_db_coverage_fsm_sup:start_coverage_fsm(Request),
+    wait_for_reqid(ReqID, ?DEFAULT_TIMEOUT).
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -316,7 +379,7 @@ do_put(BKey={_,_}, Value, Context, Options, {?MODULE, TargetNode}) ->
     Request = [ ReqID,
                 self(),
                 BKey,
-                basic_db_utils:encode_kv(Value),
+                Value,
                 Context,
                 Options],
     case node() of
@@ -333,26 +396,24 @@ sanitize_options_put(Options) when is_list(Options) ->
     %% Unfolds all occurrences of atoms in Options to tuples {Atom, true}.
     Options1 = proplists:unfold(Options),
     %% Default number of replica nodes contacted to the replication factor.
-    <<A:32, B:32, C:32>> = crypto:rand_bytes(12),
-    random:seed({A,B,C}),
-    ReplicataNodes = compute_real_replication_factor(?REPLICATION_FACTOR-1,?REPLICATION_FACTOR-1) + 1,
+    FailRate = proplists:get_value(?REPLICATION_FAIL_RATIO, Options1, ?DEFAULT_REPLICATION_FAIL_RATIO),
+    ok = basic_db_utils:maybe_seed(),
+    ReplicateXNodes = compute_real_replication_factor(FailRate, ?REPLICATION_FACTOR-1,?REPLICATION_FACTOR-1) + 1,
     %% Default number of acks from replica nodes to 2.
-    ReplicasResponses = min(ReplicataNodes, proplists:get_value(?OPT_PUT_MIN_ACKS, Options1, 2)),
+    ReplicasResponses = min(ReplicateXNodes, proplists:get_value(?OPT_PUT_MIN_ACKS, Options1, 2)),
     Options2 = proplists:delete(?OPT_PUT_REPLICAS, Options1),
     Options3 = proplists:delete(?OPT_PUT_MIN_ACKS, Options2),
-    [{?OPT_PUT_REPLICAS, ReplicataNodes}, {?OPT_PUT_MIN_ACKS,ReplicasResponses}] ++ Options3.
+    [{?OPT_PUT_REPLICAS, ReplicateXNodes}, {?OPT_PUT_MIN_ACKS,ReplicasResponses}] ++ Options3.
 
-
-compute_real_replication_factor(0, RF) -> RF;
-compute_real_replication_factor(Total, RF) ->
-    case random:uniform() > ?ALL_REPLICAS_WRITE_RATIO of
-        true  -> 
+compute_real_replication_factor(_, 0, RF) -> RF;
+compute_real_replication_factor(FailRate, Total, RF) ->
+    case random:uniform() < FailRate of
+        true  ->
             % Replicate to 1 less replica node.
-            compute_real_replication_factor(Total-1, RF-1); 
+            compute_real_replication_factor(FailRate, Total-1, RF-1);
         false ->
-            compute_real_replication_factor(Total-1, RF)
+            compute_real_replication_factor(FailRate, Total-1, RF)
     end.
-
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -537,10 +598,11 @@ wait_for_reqid(ReqID, Timeout) ->
         % put/delete
         {ReqID, ok, update}                 -> ok;
         {ReqID, timeout}                    -> {error, timeout};
+        {ReqID, timeout, restart}           -> {error, timeout, restart};
         % sync
         {ReqID, ok, sync}                   -> ok;
         % coverage
-        {ReqID, ok, coverage, Results}      -> process_vnode_states(Results);
+        {ReqID, ok, coverage, Results}      -> process_coverage_commands(Results);
         % restart/reset
         {ReqID, ok, restart, NewVnodeID}    -> lager:info("New ID: ~p",[NewVnodeID])
     after Timeout ->
@@ -549,8 +611,75 @@ wait_for_reqid(ReqID, Timeout) ->
 
 
 decode_get_reply({BinValues, Context}) ->
-    Values = [ basic_db_utils:decode_kv(BVal) || BVal <- BinValues ],
-    {Values, Context}.
+    % Values = [ basic_db_utils:decode_kv(BVal) || BVal <- BinValues ],
+    {BinValues, Context}.
+
+
+process_coverage_commands(Response=[{_,_,{ok, vs, _}}|_]) ->
+    process_vnode_states(Response);
+
+process_coverage_commands(Response=[{_,_,{ok, dk, _}}|_]) ->
+    Keys0 = lists:flatten([ K || {_,_,{ok, dk, K}} <- Response]),
+    Keys = sets:to_list(sets:from_list(Keys0)),
+    Len = length(Keys),
+    io:format("========= Actual Deleted ==========   \n"),
+    io:format("Length:\t ~p\n",[Len]);
+
+process_coverage_commands(Response=[{_,_,{ok, wk, _}}|_]) ->
+    Keys0 = lists:flatten([ K || {_,_,{ok, wk, K}} <- Response]),
+    Keys = sets:to_list(sets:from_list(Keys0)),
+    Len = length(Keys),
+    io:format("========= Keys Written w/o CC ==========   \n"),
+    io:format("Length:\t ~p\n",[Len]);
+
+process_coverage_commands(Response=[{_,_,{ok, replication_latency, _}}|_]) ->
+    Lats = lists:flatten([ L || {_,_,{ok, replication_latency, L}} <- Response]),
+    io:format("========= Replication Latency ==========   \n"),
+    io:format("Replication Latency average:\t ~p\n",[average(Lats)]),
+    case length(Lats) > 0 of
+        true -> io:format("Replication Latency max:\t ~p\n",[lists:max(Lats)]);
+        false -> ok
+    end;
+
+process_coverage_commands(Response=[{_,_,{ok, all_current_dots, _}}|_]) ->
+    LWDots = [ length(W) || {_,_,{ok, all_current_dots, {W,_}}} <- Response],
+    LDDots = [ length(D) || {_,_,{ok, all_current_dots, {_,D}}} <- Response],
+    WDots = lists:flatten([ W || {_,_,{ok, all_current_dots, {W,_}}} <- Response]),
+    DDots = lists:flatten([ D || {_,_,{ok, all_current_dots, {_,D}}} <- Response]),
+    WDotsUSort = lists:usort(WDots),
+    DDotsUSort = lists:usort(DDots),
+    WritesMissing = compute_missing_dots(lists:sort(WDots)),
+    io:format("========= Consistency Check ==========   \n"),
+    io:format("Writes:  Length Dots    :\t ~p\n",[LWDots]),
+    io:format("Writes:  Dots       Len :\t ~p\n",[length(WDots)]),
+    io:format("Writes:  Dots Usort Len :\t ~p\n",[length(WDotsUSort)]),
+    io:format("Writes Missing          :\t ~p\n",[WritesMissing]),
+    io:format("Deletes: Length Dots    :\t ~p\n",[LDDots]),
+    io:format("Deletes: Dots       Len :\t ~p\n",[length(DDots)]),
+    io:format("Deletes: Dots Usort Len :\t ~p\n",[length(DDotsUSort)]),
+    case length(WDots) == ?REPLICATION_FACTOR * length(WDotsUSort) of
+        true  -> io:format("\t~s~s\n",[color:on_green("Writes GOOD!  Total: "),color:on_green(integer_to_list(length(WDotsUSort)))]);
+        false -> io:format("\t~s~s\n",[color:on_red("Writes BAD!  Total: "),color:on_red(integer_to_list(length(WDotsUSort)))])
+    end,
+    case length(DDots) == ?REPLICATION_FACTOR * length(DDotsUSort) of
+        true  -> io:format("\t~s~s\n",[color:on_green("Deletes GOOD!  Total: "),color:on_green(integer_to_list(length(DDotsUSort)))]);
+        false -> io:format("\t~s~s\n",[color:on_yellow("Deletes Meh!  Total: "),color:on_yellow(integer_to_list(length(DDotsUSort)))])
+    end,
+    ok.
+
+compute_missing_dots(L) ->
+    L2 = compute_missing_dots(L,[]),
+    [ {N,E} || {N,E}  <- L2, N =/= ?REPLICATION_FACTOR].
+
+compute_missing_dots([],L) -> L;
+compute_missing_dots([H|T],[]) ->
+    compute_missing_dots(T,[{1,H}]);
+compute_missing_dots([H1|T],[{N,H2}|T2]) when H1 =:= H2 ->
+    compute_missing_dots(T,[{N+1,H2}|T2]);
+compute_missing_dots([H1|T],L=[{_,H2}|_]) when H1 =/= H2 ->
+    compute_missing_dots(T,[{1,H1}|L]).
+
+
 
 process_vnode_states(States) ->
     _Results  = [ process_vnode_state(State) || State <- States ],
@@ -559,12 +688,9 @@ process_vnode_states(States) ->
     io:format("\t Number of vnodes                  \t ~p\n",[length(States)]),
     ok.
 
-process_vnode_state({_Index, _Node, {ok,_State}}) ->
+process_vnode_state({_Index, _Node, {ok, vs, _State}}) ->
     #{ok => average([])}.
 
-average(X) ->
-    average(X, 0, 0).
-average([H|T], Length, Sum) ->
-    average(T, Length + 1, Sum + H);
-average([], Length, Sum) ->
-    Sum / max(1,Length).
+average(L) ->
+    lists:sum(L) / max(1,length(L)).
+

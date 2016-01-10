@@ -21,7 +21,7 @@
     req_id          :: pos_integer(),
     from            :: pid(),
     %% The node coordination this request (must be a replica node for this key).
-    coordinator     :: node(),
+    coordinator     :: [index_node()],
     %% Operation can be a write or a delete.
     operation       :: operation(),
     %$ The key being written.
@@ -42,6 +42,10 @@
     completed       :: boolean(),
     %% Timeout for the request.
     timeout         :: non_neg_integer(),
+    %% True if we don't care about Acks in FSMs
+    no_reply        :: boolean(),
+    %% Start of the FSM
+    start_time      :: erlang:timestamp(),
     %% The options proplist.
     options         :: list() % proplist()
 }).
@@ -84,6 +88,8 @@ init([ReqID, From, BKey, Value, Context, Options]) ->
         acks        = 0,
         completed   = false,
         timeout     = proplists:get_value(?OPT_TIMEOUT, Options, ?DEFAULT_TIMEOUT),
+        no_reply    = proplists:get_value(?OPT_TIMEOUT, Options, ?DEFAULT_NO_REPLY),
+        start_time  = os:timestamp(),
         options     = Options
     },
     {ok, prepare, SD, 0}.
@@ -119,42 +125,44 @@ write(timeout, State=#state{req_id      = ReqID,
                             operation   = Operation,
                             key         = BKey,
                             value       = Value,
+                            start_time  = StartTime,
                             context     = Context}) ->
     % % add an entry in the write requests for this key, to track acks from remote nodes
     % Writes = dict:store(Key, sets:new(), State#state.writes),
-    basic_db_vnode:write(Coordinator, ReqID, Operation, BKey, Value, Context),
+    basic_db_vnode:write(Coordinator, ReqID, Operation, BKey, Value, Context, StartTime),
     {next_state, waiting_coordinator, State}.
 
 %% @doc Coordinator writes the value.
-waiting_coordinator({ok, ReqID, DVV}, State=#state{ req_id      = ReqID,
+%% @doc Wait for W-1 write acks. Timeout is 20 seconds by default (see dotted_db.hrl).
+waiting_coordinator(timeout, State=#state{ req_id = ReqID, from = From }) ->
+    lager:warning("Coordinator timeout!!"),
+    From ! {ReqID, timeout},
+    {stop, timeout, State};
+waiting_coordinator({ok, ReqID, Object}, State=#state{ req_id      = ReqID,
                                                     coordinator = Coordinator,
                                                     from        = From,
                                                     key         = BKey,
                                                     min_acks    = MinAcks,
-                                                    acks        = Acks,
                                                     replication = Replication,
                                                     replicas    = Replicas,
+                                                    no_reply    = NoReply,
                                                     timeout     = Timeout}) ->
     % if we have enough write acknowledgments, reply back to the client
-    Completed = case Acks + 1 >= MinAcks of
-                    true  ->
-                        From ! {ReqID, ok, update},
-                        true;
-                    false ->
-                        false
-                end,
-    case Acks + 1 >= Replication of
+    case (1 >= MinAcks) of true -> From ! {ReqID, ok, update}; _ -> ok end,
+    case 1 >= Replication of
         true  -> %% If true, we don't want to replicate to more replica nodes.
-            % ?PRINT("PUT_FSM: (1):"),
-            % ?PRINT(Acks+1),
             {stop, normal, State};
         false ->  %% Else, replicate to the remaining number of replica nodes, according to `Replication`
             Replicas2 = basic_db_utils:random_sublist(Replicas -- Coordinator, Replication - 1),
-            % ?PRINT("PUT_FSM: (3):"),
-            % ?PRINT(length(Replicas2) + 1),
-            % ?PRINT("PUT FSM: I'm replicating to ~p replica nodes in total.", [length(Replicas2) + 1]),
-            basic_db_vnode:replicate(Replicas2, ReqID, BKey, DVV),
-            {next_state, waiting_replicas, State#state{acks=Acks+1, completed=Completed}, Timeout}
+            lager:debug("PUT FSM: I'm replicating to ~p replica nodes in total.", [length(Replicas2) + 1]),
+            basic_db_vnode:replicate(Replicas2, {ReqID, BKey, Object, NoReply}),
+            case NoReply of
+                true ->
+                    From ! {ReqID, ok, update},
+                    {stop, normal,  State#state{acks=1, completed=true}};
+                false ->
+                    {next_state, waiting_replicas, State#state{acks=1, completed=(1 >= MinAcks)}, Timeout}
+            end
     end.
 
 

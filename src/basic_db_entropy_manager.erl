@@ -36,6 +36,10 @@
          get_lock/2,
          requeue_poke/1,
          start_exchange_remote/3,
+         set_sync_interval/1,
+         get_sync_interval/0,
+         set_kill_node_interval/1,
+         get_kill_node_interval/0,
          exchange_status/4]).
 -export([all_pairwise_exchanges/2]).
 -export([get_aae_throttle/0,
@@ -71,7 +75,13 @@
                 exchange_queue = []        :: [exchange()],
                 exchanges      = []        :: [{index(), reference(), pid()}],
                 vnode_status_pid = undefined :: 'undefined' | pid(),
-                last_throttle  = undefined :: 'undefined' | non_neg_integer()
+                last_throttle  = undefined :: 'undefined' | non_neg_integer(),
+                sync_timer     :: reference(),
+                sync_interval  :: non_neg_integer(),
+                sync_mode      :: on | off,
+                kill_timer     :: reference(),
+                kill_interval  :: non_neg_integer(),
+                kill_mode      :: on | off
                }).
 
 -type state() :: #state{}.
@@ -196,15 +206,28 @@ cancel_exchange(Index) ->
 cancel_exchanges() ->
     gen_server:call(?MODULE, cancel_exchanges, infinity).
 
+set_sync_interval(Interval) ->
+    gen_server:call(?MODULE, {set_sync_interval, Interval}, infinity).
+
+get_sync_interval() ->
+    gen_server:call(?MODULE, get_sync_interval, infinity).
+
+set_kill_node_interval(Interval) ->
+    gen_server:call(?MODULE, {set_kill_node_interval, Interval}, infinity).
+
+get_kill_node_interval() ->
+    gen_server:call(?MODULE, get_kill_node_interval, infinity).
+
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 
 -spec init([]) -> {'ok',state()}.
 init([]) ->
-    case app_helper:get_env(basic_db, storage_backend) of
-        "leveldb"   -> ok;
-        _           -> 
+    case application:get_env(basic_db, storage_backend, ets) of
+        leveldb   -> ok;
+        bitcask   -> ok;
+        _           ->
             AEpath = "./data/anti_entropy",
             os:cmd("rm -Rf " ++ AEpath),
             ExFSMpath = "./data/basic_db_exchange_fsm",
@@ -229,7 +252,6 @@ init([]) ->
                 {Check, false} <- DiagProps],
             error(invalid_aae_throttle_limits)
     end,
-    schedule_tick(),
 
     {_, Opts} = settings(),
     Mode = case proplists:is_defined(manual, Opts) of
@@ -239,15 +261,51 @@ init([]) ->
                    automatic
            end,
     set_debug(proplists:is_defined(debug, Opts)),
+
+    SyncTimer = schedule_sync(?DEFAULT_SYNC_INTERVAL),
+    KillTimer = schedule_kill(?DEFAULT_NODE_KILL_RATE),
+
     State = #state{mode=Mode,
-                   trees=[],
-                   tree_queue=[],
-                   locks=[],
-                   exchanges=[],
-                   exchange_queue=[]},
+                   trees            = [],
+                   tree_queue       = [],
+                   locks            = [],
+                   exchanges        = [],
+                   exchange_queue   = [],
+                   sync_timer       = SyncTimer,
+                   sync_interval    = ?DEFAULT_SYNC_INTERVAL,
+                   kill_timer       = KillTimer,
+                   kill_interval    = ?DEFAULT_NODE_KILL_RATE,
+                   kill_mode        = off},
     State2 = reset_build_tokens(State),
     schedule_reset_build_tokens(),
     {ok, State2}.
+
+handle_call(get_sync_interval, _From, State) ->
+    {reply, {ok, State#state.sync_interval}, State};
+handle_call({set_sync_interval, Interval}, _From, State) ->
+    State#state.sync_timer =/= undefined andalso erlang:cancel_timer(State#state.sync_timer),
+    lager:info("Setting new Sync interval: ~p", [Interval]),
+    SyncTimer = schedule_sync(Interval),
+    {reply, ok, State#state{sync_timer=SyncTimer, sync_interval=Interval}};
+
+handle_call(get_kill_node_interval, _From, State=#state{kill_mode=off}) ->
+    {reply, {ok, 0}, State};
+handle_call(get_kill_node_interval, _From, State=#state{kill_mode=on}) ->
+    {reply, {ok, State#state.kill_interval}, State};
+
+handle_call({set_kill_node_interval, 0}, _From, State) ->
+    lager:info("Turning off kill_node mode."),
+    State#state.kill_timer =/= undefined andalso erlang:cancel_timer(State#state.kill_timer),
+    {reply, ok, State#state{kill_interval=0, kill_mode=off, kill_timer=undefined}};
+handle_call({set_kill_node_interval, Interval}, _From, State) ->
+    State#state.kill_timer =/= undefined andalso erlang:cancel_timer(State#state.kill_timer),
+    % properly seeding the process
+    basic_db_utils:maybe_seed(),
+    %% randomize the first schedule, so that every machine is not killing nodes in-sync
+    Interval2 = random:uniform(Interval),
+    lager:info("Setting new kill_node: (random)> ~p (interval)> ~p", [Interval2, Interval]),
+    KillTimer = schedule_kill(Interval2),
+    {reply, ok, State#state{kill_interval=Interval, kill_mode=on, kill_timer=KillTimer}};
 
 handle_call({set_mode, Mode}, _From, State=#state{mode=CurrentMode}) ->
     State2 = case {CurrentMode, Mode} of
@@ -264,12 +322,12 @@ handle_call({manual_exchange, Exchange}, _From, State) ->
 handle_call(enable, _From, State) ->
     {_, Opts} = settings(),
     application:set_env(basic_db, anti_entropy, {on, Opts}),
-    {reply, ok, State};
+    {reply, ok, State#state{sync_mode=on}};
 handle_call(disable, _From, State) ->
     {_, Opts} = settings(),
     application:set_env(basic_db, anti_entropy, {off, Opts}),
     _ = [basic_db_index_hashtree:stop(T) || {_,T} <- State#state.trees],
-    {reply, ok, State};
+    {reply, ok, State#state{sync_mode=off}};
 handle_call({get_lock, Type, Pid}, _From, State) ->
     {Reply, State2} = do_get_lock(Type, Pid, State),
     {reply, Reply, State2};
@@ -318,8 +376,16 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(tick, State) ->
-    State1 = maybe_tick(State),
-    {noreply, State1};
+    NextState = maybe_tick(State),
+    {noreply, NextState};
+
+handle_info(kill_node, State=#state{kill_mode=off}) ->
+    {noreply, State};
+handle_info(kill_node, State=#state{kill_mode=on, kill_interval=Interval}) ->
+    KillTimer = schedule_kill(Interval),
+    {_, NextState} = kill_node(State#state{kill_timer=KillTimer}),
+    {noreply, NextState};
+
 handle_info(reset_build_tokens, State) ->
     State2 = reset_build_tokens(State),
     schedule_reset_build_tokens(),
@@ -332,6 +398,16 @@ handle_info({{hashtree_pid, Index}, Reply}, State) ->
         _ ->
             {noreply, State}
     end;
+
+handle_info({_RefId, ok, restart, _NewID}, State) ->
+    {noreply, State};
+handle_info({_RefId, error, restart}, State) ->
+    lager:warning("Kill node request error!"),
+    {noreply, State};
+handle_info({_RefId, timeout, restart}, State) ->
+    lager:warning("Kill node request timeout!"),
+    {noreply, State};
+
 handle_info({'DOWN', _, _, Pid, Status}, #state{vnode_status_pid=Pid}=State) ->
     case Status of
         {result, _} = RES ->
@@ -484,20 +560,49 @@ next_tree(State=#state{tree_queue=Queue}) ->
     State2 = State#state{tree_queue=Rest},
     {Pid, State2}.
 
--spec schedule_tick() -> ok.
-schedule_tick() ->
+-spec schedule_sync(non_neg_integer()) -> reference().
+schedule_sync(Interval) ->
     %% Perform tick every 15 seconds
     % DefaultTick = 15000,
-    DefaultTick = ?TICK,
-    Tick = app_helper:get_env(basic_db,
-                              anti_entropy_tick,
-                              DefaultTick),
-    erlang:send_after(Tick, ?MODULE, tick),
-    ok.
+    % DefaultTick = ?DEFAULT_SYNC_INTERVAL,
+    % Tick = app_helper:get_env(basic_db,
+    %                           anti_entropy_tick,
+    %                           DefaultTick),
+    erlang:send_after(Interval, ?MODULE, tick).
+
+-spec schedule_kill(non_neg_integer()) -> reference().
+schedule_kill(0) ->
+    undefined;
+schedule_kill(Interval) ->
+    %% Kill a Node every X seconds
+    erlang:send_after(Interval, ?MODULE, kill_node).
+
+-spec kill_node(state()) -> {any(), state()}.
+kill_node(State) ->
+    ReqID = basic_db_utils:make_request_id(),
+    ThisNode = node(),
+    case basid_db_utils:vnodes_from_node(ThisNode) of
+        [] ->
+            lager:warning("No vnodes to kill ~p", [node()]),
+            {ok, State};
+        Vnodes ->
+            VN = {_, ThisNode} = case Vnodes of
+                [Vnode] -> Vnode;
+                _ -> basic_db_utils:random_from_list(Vnodes)
+            end,
+            case basid_db_restart_fsm:start_link(ReqID, self(), VN, []) of
+                {ok, FSMPid} ->
+                    _Ref = monitor(process, FSMPid),
+                    {ok, State};
+                {error, Reason} ->
+                    lager:warning("~p: error on restart_fsm_sup:start. Reason:~p", [?MODULE, Reason]),
+                    {Reason, State}
+            end
+    end.
 
 -spec maybe_tick(state()) -> state().
 maybe_tick(State) ->
-    case enabled() of
+    NextState = case enabled() of
         true ->
             % case riak_core_capability:get({basic_db, anti_entropy}, disabled) of
             %     disabled ->
@@ -505,15 +610,15 @@ maybe_tick(State) ->
             %     enabled_v1 ->
             %         NextState = tick(State)
             % end;
-            NextState = tick(State);
+            tick(State);
         false ->
             %% Ensure we do not have any running index_hashtrees, which can
             %% happen when disabling anti-entropy on a live system.
             _ = [basic_db_index_hashtree:stop(T) || {_,T} <- State#state.trees],
-            NextState = State
+            State
     end,
-    schedule_tick(),
-    NextState.
+    SyncTimer = schedule_sync(State#state.sync_interval),
+    NextState#state{sync_timer = SyncTimer}.
 
 -spec tick(state()) -> state().
 tick(State) ->
