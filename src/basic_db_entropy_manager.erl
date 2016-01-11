@@ -581,7 +581,7 @@ schedule_kill(Interval) ->
 kill_node(State) ->
     ReqID = basic_db_utils:make_request_id(),
     ThisNode = node(),
-    case basid_db_utils:vnodes_from_node(ThisNode) of
+    case basic_db_utils:vnodes_from_node(ThisNode) of
         [] ->
             lager:warning("No vnodes to kill ~p", [node()]),
             {ok, State};
@@ -590,7 +590,7 @@ kill_node(State) ->
                 [Vnode] -> Vnode;
                 _ -> basic_db_utils:random_from_list(Vnodes)
             end,
-            case basid_db_restart_fsm:start_link(ReqID, self(), VN, []) of
+            case basic_db_restart_fsm:start_link(ReqID, self(), VN, []) of
                 {ok, FSMPid} ->
                     _Ref = monitor(process, FSMPid),
                     {ok, State};

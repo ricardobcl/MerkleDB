@@ -132,11 +132,11 @@ commands(D=[<<"DELETE">>, Bucket, Key], S) ->
 commands(D=[<<"OPTIONS">>, Sync, ReplicationFailure, NodeFailure], S) ->
     lager:info("OPTIONS Msg:~p",[D]),
     %% set new sync interval
-    basic_db_sync_manager:set_sync_interval(Sync),
+    basic_db_entropy_manager:set_sync_interval(Sync),
     %% set new replication message failure rate 0 <= rate <= 1
     State1 = S#state{options=[{?REPLICATION_FAIL_RATIO, ReplicationFailure}]},
     %% set new kill node rate
-    basic_db_sync_manager:set_kill_node_interval(NodeFailure),
+    basic_db_entropy_manager:set_kill_node_interval(NodeFailure),
     Response =  [<<"OK">>],
     lager:debug("OPTIONS Res:~p",[Response]),
     send(State1, Response);

@@ -186,7 +186,7 @@ read_repair(BKey, Replies, AAE_Repair) ->
     %% Maybe update the false positive stats for AAE.
     case AAE_Repair of
         false ->
-            length(OutadedNodes)==0 andalso
+            length(OutadedNodes)=/=0 andalso
                 lager:info("GET_FSM: AAE REPAIR for ~p nodes, ~p outdated nodes", [length(Replies),length(OutadedNodes)]),
             PayloadSize = byte_size(term_to_binary(basic_db_object:get_values(FinalObject))),
             MetaSize = byte_size(term_to_binary(basic_db_object:get_context(FinalObject))),
