@@ -91,7 +91,7 @@ new() -> {}.
 %% @doc Constructs a new clock set without causal history,
 %% and receives a list of values that gos to the anonymous list.
 -spec new(value() | [value()]) -> clock().
-new(Vs) when is_list(Vs) -> {[], Vs};
+new([Vs]) -> {[], [Vs]};
 new(V) -> {[], [V]}.
 
 %% @doc Constructs a new clock set with the causal history
@@ -99,9 +99,9 @@ new(V) -> {[], [V]}.
 %% and receives a list of values that gos to the anonymous list.
 %% The version vector SHOULD BE a direct result of join/1.
 -spec new(vector(), value() | [value()]) -> clock().
-new(VV, Vs) when is_list(Vs) ->
+new(VV, [Vs]) ->
     VVS = lists:sort(VV), % defense against non-order preserving serialization
-    {[{I, N, []} || {I, N} <- VVS], Vs};
+    {[{I, N, []} || {I, N} <- VVS], [Vs]};
 new(VV, V) -> new(VV, [V]).
 
 %% @doc Synchronizes a list of clocks using sync/2.
