@@ -180,6 +180,8 @@ task :delete_storage do
   (1..NUM_NODES).each do |n|
     print yellow %x<rm -rf _build/dev/dev#{n}/basic_db/data/vnode_state>
     print yellow %x<rm -rf _build/dev/dev#{n}/basic_db/data/objects>
+    print yellow %x<rm -rf _build/dev/dev#{n}/basic_db/data/anti_entropy>
+    print yellow %x<rm -rf _build/dev/dev#{n}/basic_db/data/basic_db_exchange_fsm>
     # sh %{rm -rf dev/dev#{n}/log}
   end
   puts green " ========> Dev Storage Deleted!           "
