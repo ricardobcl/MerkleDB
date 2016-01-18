@@ -235,7 +235,7 @@ handle_command({repair, BKey, NewObject}, Sender, State) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 handle_command({write, ReqID, Operation, BKey, Value, Context, FSMTime}, _Sender, State) ->
-
+    % lager:info("\tWRITE~n\tReq: ~p~n\tK: ~p~n\tV: ~p~n\tNode: ~p~n\t",[ReqID,BKey,Value,State#state.id]),
     % debug
     RN = basic_db_utils:replica_nodes(BKey),
     This = {State#state.index, node()},
@@ -276,7 +276,7 @@ handle_command({write, ReqID, Operation, BKey, Value, Context, FSMTime}, _Sender
 
 
 handle_command({replicate, {ReqID, BKey, NewObject, NoReply}}, _Sender, State) ->
-
+    % lager:info("\tREPLICATE~n\tReq: ~p~n\tK: ~p~n\tV: ~p~n\tNode: ~p~n\t",[ReqID,BKey,NewObject,State#state.id]),
     % debug
     RN = basic_db_utils:replica_nodes(BKey),
     This = {State#state.index, node()},
@@ -295,7 +295,7 @@ handle_command({replicate, {ReqID, BKey, NewObject, NoReply}}, _Sender, State) -
     % test if the FinalDCC has newer information
     case basic_db_object:equal(FinalObject, DiskObject) of
         true ->
-            lager:debug("Replicated object is ignored (already seen)");
+            lager:info("Replicated object is ignored (already seen)");
         false ->
             % save the new Object
             save_kv(BKey, FinalObject, State, Now),
@@ -655,6 +655,7 @@ update_hashtree(BKey, BinObj, State) when is_binary(BinObj) ->
     RObj = basic_db_utils:decode_kv(BinObj),
     update_hashtree(BKey, RObj, State);
 update_hashtree(BKey, RObj, #state{hashtrees=Trees}) ->
+    % lager:info("HT:inserting key: ~p Value: ~p Node: ~p\n",[BKey,RObj,node()]),
     Items = [{object, BKey, RObj}],
     case get_hashtree_token() of
         true ->
@@ -747,7 +748,6 @@ save_vnode_state(Dets, VnodeId={Index,_}) ->
     Key = {?VNODE_STATE_KEY, Index},
     ok = dets:insert(Dets, {Key, VnodeId}),
     ok = dets:sync(Dets),
-    lager:debug("Saved state for vnode ~p.",[VnodeId]),
     ok.
 
 % @doc Reads the relevant vnode state from the storage.

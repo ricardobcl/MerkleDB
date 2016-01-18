@@ -209,7 +209,7 @@ key_exchange(timeout, State=#state{local=LocalVN,
                              NumberKVs = length(Result),
                              BytesPerKVHash = Size/max(1,NumberKVs),
                              NumberKVs > 0 andalso
-                                lager:info("Seg: ~p   #Keys: ~p   E.bytes: ~s   BytesPerKVHash: ~.1f B~n", [Segment, NumberKVs, Size2, BytesPerKVHash]),
+                                lager:info("Seg: ~p\t#Keys: ~p\tE.bytes: ~s\tBytesPerKVHash: ~.1f B~n", [Segment, NumberKVs, Size2, BytesPerKVHash]),
                              {LocalIdx, _LocalNode} = LocalVN,
                              {RemoteIdx, RemoteNode} = RemoteVN,
                              basic_db_entropy_info:exchange_total(LocalIdx, NumberKVs, Size),

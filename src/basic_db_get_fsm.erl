@@ -180,25 +180,25 @@ read_repair(BKey, Replies, AAE_Repair) ->
     %% Compute the final Object.
     FinalObject = final_object_from_replies(Replies),
     %% Computed what replica nodes have an outdated version of this key.
-    OutadedNodes = [IN || {IN,Object} <- Replies,
-                        not ( basic_db_object:equal(FinalObject, Object) orelse
-                              basic_db_object:less(FinalObject, Object) )],
+    OutdatedNodes = [IN || {IN,Object} <- Replies, basic_db_object:less(Object, FinalObject)],
     %% Maybe update the false positive stats for AAE.
     case AAE_Repair of
         false ->
-            length(OutadedNodes)=/=0 andalso
-                lager:info("GET_FSM: AAE REPAIR for ~p nodes, ~p outdated nodes", [length(Replies),length(OutadedNodes)]),
+            % length(OutdatedNodes)=/=0 andalso
+            %     lager:info("GET_FSM: AAE REPAIR for ~p nodes, ~p~n", [length(Replies),length(OutdatedNodes)]),
+            % lager:info("FinalObject: ~p~n", [FinalObject]),
+            % lager:info("Replies: ~p~n", [Replies]),
             PayloadSize = byte_size(term_to_binary(basic_db_object:get_values(FinalObject))),
             MetaSize = byte_size(term_to_binary(basic_db_object:get_context(FinalObject))),
-            [rpc:cast(Node, basic_db_entropy_info, key_repair_complete, 
-                        [Index, length(OutadedNodes), {PayloadSize,MetaSize}]) ||
+            [rpc:cast(Node, basic_db_entropy_info, key_repair_complete,
+                        [Index, length(OutdatedNodes), {PayloadSize,MetaSize}]) ||
                             {{Index, Node},_} <- Replies];
         true ->
-            % lager:info("GET_FSM: read repair ON"),
+            lager:info("GET_FSM: read repair ON"),
             ok
     end,
     %% Repair the outdated keys.
-    basic_db_vnode:repair(OutadedNodes, BKey, FinalObject),
+    basic_db_vnode:repair(OutdatedNodes, BKey, FinalObject),
     ok.
 
 -spec final_object_from_replies([{index_node(), basic_db_object:object()}]) ->
