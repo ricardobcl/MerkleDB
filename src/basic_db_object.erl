@@ -69,9 +69,15 @@ sync(L) -> lists:foldl(fun sync/2, new(), L).
 -spec sync(object(), object()) -> object().
 sync(O1, O2) ->
     DVV = dvv:sync(get_container(O1), get_container(O2)),
-    case get_fsm_time(O1) of
-        undefined   -> set_container(DVV, O2);
-        _           -> set_container(DVV, O1)
+    case {get_fsm_time(O1), get_fsm_time(O2)} of
+        % {undefined, undefined}  -> set_container(DVV, O1);
+        {_, undefined}  -> set_container(DVV, O1);
+        {undefined, _}  -> set_container(DVV, O2);
+        {_, _}          ->
+            case dvv:equal(DVV, get_container(O1)) of
+                true -> set_container(DVV, O1);
+                false -> set_container(DVV, O2)
+            end
     end.
 
 -spec equal(object(), object()) -> boolean().
