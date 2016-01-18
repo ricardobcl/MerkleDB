@@ -91,12 +91,16 @@ random_sublist(List, N) ->
     [ E || {_,E} <- List3].
 
 -spec encode_kv(term()) -> binary().
-encode_kv(Term) ->
-    term_to_binary(Term).
+encode_kv(Term) when not is_binary(Term) ->
+    term_to_binary(Term);
+encode_kv(Term) when is_binary(Term) ->
+    Term.
 
 -spec decode_kv(binary()) -> term().
-decode_kv(Binary) ->
-    binary_to_term(Binary).
+decode_kv(Binary) when is_binary(Binary) ->
+    binary_to_term(Binary);
+decode_kv(Binary) when not is_binary(Binary) ->
+    Binary.
 
 -spec human_filesize(non_neg_integer() | float()) -> list().
 human_filesize(Size) -> human_filesize(Size, ["B","KB","MB","GB","TB","PB"]).

@@ -422,19 +422,8 @@ load_built(#state{trees=Trees}) ->
 % -spec hash_object({riak_object:bucket(), riak_object:key()},
 %                   riak_object_t2b() | riak_object:riak_object()) -> binary().
 hash_object(_, RObj0) ->
-    try
-        % RObj = case riak_object:is_robject(RObj0) of
-        %     true -> RObj0;
-        %     false -> riak_object:from_binary(Bucket, Key, RObj0)
-        % end,
-        % Hash = riak_object:hash(RObj),
-        % term_to_binary(Hash)
-        RObj1 = basic_db_utils:decode_kv(RObj0),
-        term_to_binary(erlang:phash2(term_to_binary(RObj1)))
-    catch _:_ ->
-            Null = erlang:phash2(<<>>),
-            term_to_binary(Null)
-    end.
+    RObj1 = basic_db_utils:decode_kv(RObj0),
+    term_to_binary(erlang:phash2(term_to_binary(RObj1))).
 
 % hash_index_data(IndexData) when is_list(IndexData) ->
 %     Bin = term_to_binary(lists:usort(IndexData)),
