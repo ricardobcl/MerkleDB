@@ -711,10 +711,10 @@ report_stats(State) ->
     % Optionally collect stats
     case State#state.stats of
         true ->
-            DelKeys = length(get_deleted_keys(State#state.id)),
+            DelKeys = length(ets_get_deleted(State#state.atom_id)),
             basic_db_stats:notify({histogram, deleted_keys}, DelKeys),
 
-            WKeys = length(get_written_keys(State#state.id)),
+            WKeys = length(ets_get_written(State#state.atom_id)),
             basic_db_stats:notify({histogram, written_keys}, WKeys),
 
             ok;
@@ -740,6 +740,7 @@ save_kv(Key={_,_}, Object, S=#state{atom_id=ID}, Now, ETS) ->
     ETS andalso ets_set_fsm_time(ID, Key, basic_db_object:get_fsm_time(Object)),
     basic_db_storage:put(S#state.storage, Key, Object).
 
+-spec get_ets_id(any()) -> atom().
 get_ets_id(Id) ->
     list_to_atom(lists:flatten(io_lib:format("~p", [Id]))).
 
@@ -771,13 +772,6 @@ read_vnode_state(Index) ->
     end.
 
 
-get_deleted_keys(Id) ->
-    ets:select(get_ets_id(Id),[{{'$1', '$2'}, [{'==', '$2', 0}], ['$1'] }]).
-
-get_written_keys(Id) ->
-    ets:select(get_ets_id(Id),[{{'$1', '$2'}, [{'==', '$2', 1}], ['$1'] }]).
-
-
 new_vnode_id(Index) ->
     % generate a new vnode ID for now
     basic_db_utils:maybe_seed(),
@@ -785,8 +779,11 @@ new_vnode_id(Index) ->
     {Index, random:uniform(999999999999)}.
 
 create_ets_all_keys(NewVnodeID) ->
-    ((ets:info(get_ets_id(NewVnodeID)) /= undefined) orelse
-        ets:new(get_ets_id(NewVnodeID), [named_table, public, set, {write_concurrency, false}])).
+    % create the ETS for this vnode
+    AtomID = get_ets_id(NewVnodeID),
+    _ = ((ets:info(AtomID) =:= undefined) andalso
+            ets:new(AtomID, [named_table, public, set, {write_concurrency, false}])),
+    AtomID.
 
 delete_ets_all_keys(#state{atom_id=AtomID}) ->
     _ = ((ets:info(AtomID) =:= undefined) andalso ets:delete(AtomID)),
