@@ -100,7 +100,7 @@ new(V) -> {[], [V]}.
 %% The version vector SHOULD BE a direct result of join/1.
 -spec new(vector(), value() | [value()]) -> clock().
 new(VV, [Vs]) ->
-    VVS = lists:sort(VV), % defense against non-order preserving serialization
+    VVS = lists:usort(VV), % defense against non-order preserving serialization
     {[{I, N, []} || {I, N} <- VVS], [Vs]};
 new(VV, V) -> new(VV, [V]).
 
@@ -157,7 +157,7 @@ merge(I, N1, L1, N2, L2) ->
 %% @doc Return a version vector that represents the causal history.
 -spec join(clock()) -> vector().
 join({}) -> [];
-join({C,_}) -> [{I, N} || {I, N, _} <- C].
+join({C,_}) -> lists:usort([{I, N} || {I, N, _} <- C]).
 
 %% @doc Advances the causal history with the given id.
 %% The new value is the *anonymous dot* of the clock.
