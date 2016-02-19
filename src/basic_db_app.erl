@@ -24,7 +24,7 @@ start(_StartType, _StartArgs) ->
 
             % cache the replica nodes for specific keys
             _ = ((ets:info(?ETS_CACHE_REPLICA_NODES) =:= undefined) andalso
-                    ets:new(?ETS_CACHE_REPLICA_NODES, 
+                    ets:new(?ETS_CACHE_REPLICA_NODES,
                         [named_table, public, set, {read_concurrency, true}, {write_concurrency, false}])),
 
             % start listening socket for API msgpack messages
@@ -41,18 +41,36 @@ start(_StartType, _StartArgs) ->
                 {histogram, deleted_keys},
                 % number of written keys
                 {histogram, written_keys},
+                % sent keys in segments of the MT
+                {histogram, sync_segment_keys_missing},
+                % atual non-equal key-hash in segments of the MT
+                {histogram, sync_segment_keys_truly_missing},
+                % ratio of repaired objects and the actual objects needing repair
+                {histogram, sync_hit_ratio},
+                % size of the payload (actual data) of the sent objects in a sync
+                {histogram, sync_payload_size},
+                % size of the metadata of the sent objects in a sync
+                {histogram, sync_metadata_size},
+                % size of the causal context of the sent objects in a sync
+                {histogram, sync_context_size},
+                % number of missing objects sent
+                {histogram, sync_sent_missing},
+                % number of truly missing objects from those that were sent
+                {histogram, sync_sent_truly_missing},
                 % gauge, point-in-time single value measure of replication latency
                 {gauge, write_latency},
-                % gauge, point-in-time single value measure of strip latency for writes
-                {gauge, strip_write_latency},
-                % gauge, point-in-time single value measure of strip latency for deletes
-                {gauge, strip_delete_latency}
+                % number of entries per clock (DVV) saved to disk
+                {histogram, entries_per_clock},
+                % size of the merkle trees per node
+                {histogram, mt_size}
                 ],
-                " replication factor: " ++ integer_to_list(?REPLICATION_FACTOR) ++
-                " sync interval: " ++ integer_to_list(?DEFAULT_SYNC_INTERVAL) ++
-                " replication failure rate: " ++ integer_to_list(?DEFAULT_REPLICATION_FAIL_RATIO) ++
-                " node kill rate: " ++ integer_to_list(?DEFAULT_NODE_KILL_RATE) ++
-                " report stats interval: " ++ integer_to_list(?REPORT_TICK_INTERVAL)
+                "replication factor, sync interval, message loss rate, node kill rate, stats interval, # of MT leafs\n" ++
+                integer_to_list(?REPLICATION_FACTOR) ++ ", " ++
+                integer_to_list(?DEFAULT_SYNC_INTERVAL) ++ ", " ++
+                integer_to_list(?DEFAULT_REPLICATION_FAIL_RATIO) ++ ", " ++
+                integer_to_list(?DEFAULT_NODE_KILL_RATE) ++ ", " ++
+                integer_to_list(?REPORT_TICK_INTERVAL) ++ ", " ++
+                float_to_list(math:pow(?MTREE_CHILDREN,2), [{decimals,0}]) ++ "\n"
             ),
             basic_db_stats:start(),
 

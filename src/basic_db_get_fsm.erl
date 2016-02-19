@@ -38,6 +38,7 @@
     timeout     :: non_neg_integer()
 }).
 
+-type state() :: #state{}.
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -151,7 +152,7 @@ finalize(timeout, State=#state{ do_rr       = true,
                                 key         = BKey,
                                 max_acks    = Max,
                                 replies     = Replies}) ->
-    read_repair(BKey, Replies, Max == ?REPLICATION_FACTOR),
+    read_repair(BKey, Replies, Max == ?REPLICATION_FACTOR, State),
     {stop, normal, State}.
 
 
@@ -175,8 +176,8 @@ terminate(_Reason, _SN, _State) ->
 %%% Internal Functions
 %%%===================================================================
 
--spec read_repair(bkey(), [{index_node(), basic_db_object:object()}], boolean()) -> ok.
-read_repair(BKey, Replies, AAE_Repair) ->
+-spec read_repair(bkey(), [{index_node(), basic_db_object:object()}], boolean(), state()) -> ok.
+read_repair(BKey, Replies, AAE_Repair, #state{key=Key}) ->
     %% Compute the final Object.
     FinalObject = final_object_from_replies(Replies),
     %% Computed what replica nodes have an outdated version of this key.
@@ -192,7 +193,25 @@ read_repair(BKey, Replies, AAE_Repair) ->
             MetaSize = byte_size(term_to_binary(basic_db_object:get_context(FinalObject))),
             [rpc:cast(Node, basic_db_entropy_info, key_repair_complete,
                         [Index, length(OutdatedNodes), {PayloadSize,MetaSize}]) ||
-                            {{Index, Node},_} <- Replies];
+                            {{Index, Node},_} <- Replies],
+
+            ObjectSize = byte_size(term_to_binary([{Key, basic_db_object:get_values(Obj)} || {_,Obj} <- Replies])),
+            ContextSize = byte_size(term_to_binary([basic_db_object:get_context(Obj) || {_,Obj} <- Replies])),
+            basic_db_stats:notify({histogram, sync_sent_missing}, 1),
+            basic_db_stats:notify({histogram, sync_payload_size}, ObjectSize),
+            basic_db_stats:notify({histogram, sync_context_size}, ContextSize),
+            case length(OutdatedNodes) of
+                2 ->
+                    basic_db_stats:notify({histogram, sync_hit_ratio}, 100),
+                    basic_db_stats:notify({histogram, sync_sent_truly_missing}, 1);
+                1 ->
+                    basic_db_stats:notify({histogram, sync_hit_ratio}, 100),
+                    basic_db_stats:notify({histogram, sync_sent_truly_missing}, 1);
+                0 ->
+                    basic_db_stats:notify({histogram, sync_hit_ratio}, 0),
+                    basic_db_stats:notify({histogram, sync_sent_truly_missing}, 0)
+            end,
+            ok;
         true ->
             lager:info("GET_FSM: read repair ON"),
             ok

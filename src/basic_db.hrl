@@ -12,7 +12,7 @@
 
 %% Options for AAE.
 -define(DEFAULT_SYNC_INTERVAL, 500).
--define(DEFAULT_HASHTREE_TOKENS, 90).
+-define(DEFAULT_HASHTREE_TOKENS, 200).
 -define(MTREE_CHILDREN, 10). % (MTREE_CHILDREN ^ 2) leafs
 -define(DEFAULT_NODE_KILL_RATE, 0). % kill a vnode every x milliseconds; 0 = disabled
 
@@ -25,12 +25,12 @@
 -define(OPT_PUT_REPLICAS, put_replicas).
 -define(OPT_PUT_MIN_ACKS, put_acks).
 -define(REPLICATION_FAIL_RATIO, repl_fail_ratio).
--define(DEFAULT_REPLICATION_FAIL_RATIO, 1). % ratio of "lost" replicated put/deletes
+-define(DEFAULT_REPLICATION_FAIL_RATIO, 0). % ratio of "lost" replicated put/deletes
 
 %% Options for vnodes
 -define(REPORT_TICK_INTERVAL, 2500). % (ms) interval between report stats
 
--define(STATS_FLUSH_INTERVAL, 10). % (sec) interval between flushing data to disk
+-define(STATS_FLUSH_INTERVAL, 5). % (sec) interval between flushing data to disk
 -define(DEFAULT_DO_STATS, true). % bool that says if a vnode should collect and report stats
 
 -define(ETS_CACHE_REPLICA_NODES, ets_cache_replica_nodes).

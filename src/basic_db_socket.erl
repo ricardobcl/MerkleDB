@@ -18,7 +18,7 @@
 
 -define(TIMEOUT, 0).
 
--record(state, {socket, transport, client, options}).
+-record(state, {socket, transport, client, options, mode}).
 
 %% API.
 
@@ -37,7 +37,7 @@ init(Ref, Socket, Transport, _Opts = []) ->
     ok = Transport:setopts(Socket, [{active, once}]),
     {ok, Client} = basic_db:new_client(node()),
     gen_server:enter_loop(?MODULE, [],
-        #state{socket=Socket, transport=Transport, client=Client, options=[]}).
+        #state{socket=Socket, transport=Transport, client=Client, options=[], mode=stop}).
 
 handle_info({tcp, Socket, BinData}, State=#state{
         socket=Socket, transport=Transport}) ->
@@ -130,11 +130,26 @@ commands(D=[<<"DELETE">>, Bucket, Key], S) ->
     send(S, Response);
 
 commands(D=[<<"OPTIONS">>, Sync, ReplicationFailure, NodeFailure], S) ->
-    lager:info("OPTIONS Msg:~p",[D]),
+    S2 = case S#state.mode of
+        stop ->
+            lager:info("Starting bench with options: ~p\n",[D]),
+            basic_db_stats:start_bench(),
+            S#state{mode = start};
+        start ->
+            lager:info("Stopping bench with options: ~p\n",[D]),
+            {ok, OldSync} = basic_db_entropy_manager:get_sync_interval(),
+            {ok, OldNodeFailure} = basic_db_entropy_manager:get_kill_node_interval(),
+            [{?REPLICATION_FAIL_RATIO, OldReplFailure}] = S#state.options,
+            % {WritesDeletes, KeySize} = basic_db:writes(),
+            % {Deletes, _KeySize} = basic_db:deletes(),
+            % HashSize = byte_size( term_to_binary(erlang:phash2(term_to_binary([1,2]))) ),
+            basic_db_stats:end_bench([OldSync, OldReplFailure, OldNodeFailure]),
+            S#state{mode = stop}
+    end,
     %% set new sync interval
     basic_db_entropy_manager:set_sync_interval(Sync),
     %% set new replication message failure rate 0 <= rate <= 1
-    State1 = S#state{options=[{?REPLICATION_FAIL_RATIO, ReplicationFailure}]},
+    State1 = S2#state{options=[{?REPLICATION_FAIL_RATIO, ReplicationFailure}]},
     %% set new kill node rate
     basic_db_entropy_manager:set_kill_node_interval(NodeFailure),
     Response =  [<<"OK">>],

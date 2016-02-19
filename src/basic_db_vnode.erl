@@ -227,7 +227,7 @@ handle_command({read, ReqID, BKey}, _Sender, State) ->
 
 
 handle_command({repair, BKey, NewObject}, Sender, State) ->
-    handle_command({replicate, {dummy_req_id, BKey, NewObject, ?DEFAULT_NO_REPLY}}, Sender, State);
+    handle_command({replicate, {dummy_req_id, BKey, NewObject, true}}, Sender, State);
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -246,7 +246,7 @@ handle_command({write, ReqID, Operation, BKey, Value, Context, FSMTime}, _Sender
             lager:info("(1)IxNd: ~p work vnode for key ~p in ~p", [This, BKey, RN])
     end,
 
-    Now = os:timestamp(),
+    Now = undefined,% os:timestamp(),
     % get and fill the causal history of the local key
     DiskObject = guaranteed_get(BKey, State),
     % test if this is a delete; if not, add dot-value to the Object container
@@ -287,7 +287,10 @@ handle_command({replicate, {ReqID, BKey, NewObject, NoReply}}, _Sender, State) -
             lager:info("(2)IxNd: ~p work vnode for key ~p in ~p", [This, BKey, RN])
     end,
 
-    Now = os:timestamp(),
+    Now = case ReqID of
+        dummy_req_id -> os:timestamp();
+        _            -> undefined
+    end,
     % get the local Object
     DiskObject = guaranteed_get(BKey, State),
     % synchronize both objects
@@ -421,8 +424,9 @@ handle_coverage(deleted_keys, _KeySpaces, {_, RefId, _}, State) ->
     {reply, {RefId, {ok, dk, ADelKeys}}, State};
 
 handle_coverage(final_written_keys, _KeySpaces, {_, RefId, _}, State) ->
+    ADelKeys = ets_get_deleted(State#state.atom_id),
     WrtKeys = ets_get_written(State#state.atom_id),
-    {reply, {RefId, {ok, wk, WrtKeys}}, State};
+    {reply, {RefId, {ok, wk, {ADelKeys, WrtKeys}}}, State};
 
 % handle_coverage({list_streams, Username}, _KeySpaces, {_, RefId, _}, State) ->
 %     Streams = lists:sort(list_streams(State, Username)),
@@ -623,6 +627,7 @@ close_all(State=#state{id          = Id,
         {error, Reason} ->
             lager:warning("Error on closing storage: ~p",[Reason])
     end,
+    lager:info("Terminating Vnode: ~p on node ~p",[Id, node()]),
     ok = save_vnode_state(Dets, Id),
     true = delete_ets_all_keys(State),
     ok = dets:close(Dets).
@@ -709,13 +714,25 @@ schedule_report(Interval) ->
 report_stats(State) ->
     ok = save_vnode_state(State#state.dets, State#state.id),
     % Optionally collect stats
-    case State#state.stats of
+    case State#state.stats andalso State#state.hashtrees =/= undefined of
         true ->
-            DelKeys = length(ets_get_deleted(State#state.atom_id)),
-            basic_db_stats:notify({histogram, deleted_keys}, DelKeys),
+            DelKeys = ets_get_deleted(State#state.atom_id),
+            basic_db_stats:notify({histogram, deleted_keys}, length(DelKeys)),
 
-            WKeys = length(ets_get_written(State#state.atom_id)),
-            basic_db_stats:notify({histogram, written_keys}, WKeys),
+            WKeys = ets_get_written(State#state.atom_id),
+            basic_db_stats:notify({histogram, written_keys}, length(WKeys)),
+
+            MtMetadata = 11,
+            HashSize = byte_size( term_to_binary(erlang:phash2(term_to_binary([1,2]))) ),
+            NumKeys = length(DelKeys) + length(WKeys),
+            KeySize = byte_size(term_to_binary(DelKeys++WKeys))/max(1,NumKeys),
+            BlockSize = MtMetadata + HashSize + KeySize,
+            RF = ?REPLICATION_FACTOR,
+            MT = ?MTREE_CHILDREN,
+            MT2 = math:pow(?MTREE_CHILDREN,2),
+            MTSize = (BlockSize + MT*BlockSize + MT2*BlockSize + NumKeys*BlockSize) * RF,
+            % BasicSize = (BlockSize + MT*BlockSize + (MT**2)*BlockSize + (RF*NumKeys/(Nvnodes*1.0))*BlockSize) * RF,
+            basic_db_stats:notify({histogram, mt_size}, MTSize),
 
             ok;
         false -> ok
@@ -738,6 +755,11 @@ save_kv(Key={_,_}, Object, S=#state{atom_id=ID}, Now, ETS) ->
     ETS andalso notify_write_latency(basic_db_object:get_fsm_time(Object), Now),
     ETS andalso ets_set_write_time(ID, Key, Now),
     ETS andalso ets_set_fsm_time(ID, Key, basic_db_object:get_fsm_time(Object)),
+    % case length(basic_db_object:get_context(Object)) > 3 of
+    %     true -> lager:warning("L: ~p \tC: ~p",[length(basic_db_object:get_context(Object)), basic_db_object:get_context(Object)]);
+    %     false -> lager:warning("L: ~p",[length(basic_db_object:get_context(Object))])
+    % end,
+    ETS andalso basic_db_stats:notify({histogram, entries_per_clock}, length(basic_db_object:get_context(Object))),
     basic_db_storage:put(S#state.storage, Key, Object).
 
 -spec get_ets_id(any()) -> atom().
@@ -810,7 +832,12 @@ ets_set_fsm_time(_, _, undefined)   -> true;
 ets_set_fsm_time(Id, Key, Time)     -> ensure_tuple(Id, Key), ets:update_element(Id, Key, {5, Time}).
 ets_set_dots(Id, Key, Dots)         -> ensure_tuple(Id, Key), ets:update_element(Id, Key, {6, Dots}).
 
-notify_write_latency(undefined, _WriteTime) -> ok;
+notify_write_latency(undefined, _WriteTime) ->
+    lager:warning("undefined FSM write time!!!!!!!!"),
+    ok;
+notify_write_latency(_FSMTime, undefined) ->
+    % lager:warning("Undefined write time!!!!!!!!"),
+    ok;
 notify_write_latency(FSMTime, WriteTime) ->
     Delta = timer:now_diff(WriteTime, FSMTime)/1000,
     basic_db_stats:notify({gauge, write_latency}, Delta).
@@ -824,9 +851,9 @@ ensure_tuple(Id, Key) ->
 ets_get_fsm_time(Id, Key)   -> ensure_tuple(Id, Key), ets:lookup_element(Id, Key, 5).
 % ets_get_dots(Id, Key)       -> ets:lookup_element(Id, Key, 6).
 
-ets_get_deleted(Id)  -> 
+ets_get_deleted(Id)  ->
     ets:select(Id, [{{'$1', '$2', '_', '_', '_', '_'}, [{'==', '$2', ?ETS_DELETE}], ['$1'] }]).
-ets_get_written(Id)   -> 
+ets_get_written(Id)   ->
     ets:select(Id, [{{'$1', '$2', '_', '_', '_', '_'}, [{'==', '$2', ?ETS_WRITE}], ['$1'] }]).
 
 compute_replication_latency(Id) ->

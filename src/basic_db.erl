@@ -5,11 +5,18 @@
 
 -export([
          ping/0,
+         start_bench/0,
+         start_bench/1,
+         end_bench/1,
+         end_bench/2,
          vstate/0,
          vstate/1,
          vstates/0,
          check_consistency/0,
          replication_latencies/0,
+         writes/0,
+         writes/1,
+         deletes/0,
          new_client/0,
          set_sync_interval/1,
          set_sync_interval/2,
@@ -58,6 +65,34 @@ ping() ->
     [{IndexNode, _Type}] = PrefList,
     riak_core_vnode_master:sync_spawn_command(IndexNode, ping, basic_db_vnode_master).
 
+
+start_bench() ->
+    {ok, LocalNode} = new_client(),
+    start_bench(LocalNode).
+
+start_bench({?MODULE, TargetNode}) ->
+    case node() of
+        % if this node is already the target node
+        TargetNode ->
+            basic_db_stats:start_bench();
+        % this is not the target node
+        _ ->
+            proc_lib:spawn_link(TargetNode, basic_db_stats, start_bench, [])
+    end.
+
+end_bench(Args) ->
+    {ok, LocalNode} = new_client(),
+    end_bench(Args, LocalNode).
+
+end_bench(Args, {?MODULE, TargetNode}) ->
+    case node() of
+        % if this node is already the target node
+        TargetNode ->
+            basic_db_stats:end_bench(Args);
+        % this is not the target node
+        _ ->
+            proc_lib:spawn_link(TargetNode, basic_db_stats, end_bench, [Args])
+    end.
 
 %% @doc Set the rate at which nodes sync with each other in milliseconds.
 set_sync_interval(SyncInterval) ->
@@ -168,6 +203,33 @@ vstate(IndexNode) ->
 vstates() ->
     ReqID = basic_db_utils:make_request_id(),
     Request = [ReqID, self(), vnode_state, ?DEFAULT_TIMEOUT],
+    {ok, _} = basic_db_coverage_fsm_sup:start_coverage_fsm(Request),
+    wait_for_reqid(ReqID, ?DEFAULT_TIMEOUT).
+
+%% @doc Get the Number of written keys and the average size of 1 key.
+writes() ->
+    {ok, LocalNode} = new_client(),
+    writes(LocalNode).
+
+writes({?MODULE, TargetNode}) ->
+    case node() of
+        % if this node is already the target node
+        TargetNode ->
+            ReqID = basic_db_utils:make_request_id(),
+            Request = [ReqID, self(), final_written_keys, ?DEFAULT_TIMEOUT],
+            {ok, _} = basic_db_coverage_fsm_sup:start_coverage_fsm(Request),
+            wait_for_reqid(ReqID, ?DEFAULT_TIMEOUT);
+        % this is not the target node
+        _ ->
+            proc_lib:spawn_link(TargetNode, basic_db, writes, [])
+    end.
+
+
+
+%% @doc Get the Number of written keys and the average size of 1 key.
+deletes() ->
+    ReqID = basic_db_utils:make_request_id(),
+    Request = [ReqID, self(), deleted_keys, ?DEFAULT_TIMEOUT],
     {ok, _} = basic_db_coverage_fsm_sup:start_coverage_fsm(Request),
     wait_for_reqid(ReqID, ?DEFAULT_TIMEOUT).
 
@@ -622,15 +684,22 @@ process_coverage_commands(Response=[{_,_,{ok, dk, _}}|_]) ->
     Keys0 = lists:flatten([ K || {_,_,{ok, dk, K}} <- Response]),
     Keys = sets:to_list(sets:from_list(Keys0)),
     Len = length(Keys),
+    Size = byte_size(term_to_binary(Keys))/max(1,Len),
     io:format("========= Actual Deleted ==========   \n"),
-    io:format("Length:\t ~p\n",[Len]);
+    io:format("Length:\t ~p\n",[Len]),
+    {Len, Size};
 
 process_coverage_commands(Response=[{_,_,{ok, wk, _}}|_]) ->
-    Keys0 = lists:flatten([ K || {_,_,{ok, wk, K}} <- Response]),
-    Keys = sets:to_list(sets:from_list(Keys0)),
+    Writes0 = lists:flatten([ W || {_,_,{ok, wk, {_,W}}} <- Response]),
+    Deletes0 = lists:flatten([ D || {_,_,{ok, wk, {D,_}}} <- Response]),
+    WKeys = sets:to_list(sets:from_list(Writes0)),
+    WLen = length(WKeys),
+    Keys = sets:to_list(sets:from_list(Writes0++Deletes0)),
     Len = length(Keys),
+    Size = byte_size(term_to_binary(Keys))/max(1,Len),
     io:format("========= Keys Written w/o CC ==========   \n"),
-    io:format("Length:\t ~p\n",[Len]);
+    io:format("Length:\t ~p\n",[WLen]),
+    {Len, Size};
 
 process_coverage_commands(Response=[{_,_,{ok, replication_latency, _}}|_]) ->
     Lats = lists:flatten([ L || {_,_,{ok, replication_latency, L}} <- Response]),
