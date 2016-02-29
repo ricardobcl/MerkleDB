@@ -2,3 +2,4 @@ benchmarks/tests/*
 benchmarks/*.out
 benchmarks/*.svg
 _build/*
+nohup.out

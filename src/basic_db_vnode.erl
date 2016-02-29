@@ -235,17 +235,6 @@ handle_command({repair, BKey, NewObject}, Sender, State) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 handle_command({write, ReqID, Operation, BKey, Value, Context, FSMTime}, _Sender, State) ->
-    % lager:info("\tWRITE~n\tReq: ~p~n\tK: ~p~n\tV: ~p~n\tNode: ~p~n\t",[ReqID,BKey,Value,State#state.id]),
-    % debug
-    RN = basic_db_utils:replica_nodes(BKey),
-    This = {State#state.index, node()},
-    case lists:member(This, RN) of
-        true   ->
-            ok;
-        false ->
-            lager:info("(1)IxNd: ~p work vnode for key ~p in ~p", [This, BKey, RN])
-    end,
-
     Now = undefined,% os:timestamp(),
     % get and fill the causal history of the local key
     DiskObject = guaranteed_get(BKey, State),
@@ -276,17 +265,6 @@ handle_command({write, ReqID, Operation, BKey, Value, Context, FSMTime}, _Sender
 
 
 handle_command({replicate, {ReqID, BKey, NewObject, NoReply}}, _Sender, State) ->
-    % lager:info("\tREPLICATE~n\tReq: ~p~n\tK: ~p~n\tV: ~p~n\tNode: ~p~n\t",[ReqID,BKey,NewObject,State#state.id]),
-    % debug
-    RN = basic_db_utils:replica_nodes(BKey),
-    This = {State#state.index, node()},
-    case lists:member(This, RN) of
-        true   ->
-            ok;
-        false ->
-            lager:info("(2)IxNd: ~p work vnode for key ~p in ~p", [This, BKey, RN])
-    end,
-
     Now = case ReqID of
         dummy_req_id -> os:timestamp();
         _            -> undefined

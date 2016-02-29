@@ -94,9 +94,11 @@ end
 
 desc "start rel basic_db node"
 task :start_rel do
+  sh "mv benchmarks/tests/dstat.csv benchmarks/tests/dstat_$(date -d \"today\" +\"%Y%m%d%H%M\").csv || true"
   print yellow `_build/default/rel/basic_db/bin/basic_db start`
-  print yellow `nohup benchmarks/dstat.sh &`
+  sh "nohup benchmarks/dstat.sh &"
   puts green " ========> Node Started!                  "
+  sleep(5)
 end
 
 desc "stop rel basic_db node"

@@ -13,7 +13,7 @@
 %% Options for AAE.
 -define(DEFAULT_SYNC_INTERVAL, 500).
 -define(DEFAULT_HASHTREE_TOKENS, 200).
--define(MTREE_CHILDREN, 10). % (MTREE_CHILDREN ^ 2) leafs
+-define(MTREE_CHILDREN, 100). % (MTREE_CHILDREN ^ 2) leafs
 -define(DEFAULT_NODE_KILL_RATE, 0). % kill a vnode every x milliseconds; 0 = disabled
 
 %% Options for read requests.
