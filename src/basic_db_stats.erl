@@ -150,7 +150,8 @@ handle_cast({end_bench, _Args}, State=#state{bench = off}) ->
 handle_cast({end_bench, Args}, State=#state{bench = on}) ->
     StartTime = State#state.bench_start,
     EndTime = os:timestamp(),
-    save_bench_file(StartTime, EndTime, Args, State),
+    Dir = erlang:get(bench_file),
+    spawn(fun() -> save_bench_file(StartTime, EndTime, Args, Dir, State#state.start_time) end),
     {noreply, State#state{bench = off}};
 
 %% Ignore notifications if active flag is set to false.
@@ -206,7 +207,12 @@ handle_info(flush, State) ->
     consume_flush_msgs(),
     Now = os:timestamp(),
     _ = process_stats(Now, State),
-    {noreply, State#state { last_write_time = Now }}.
+    {noreply, State#state { last_write_time = Now }};
+
+handle_info(Info, State) ->
+    lager:info("~p: unhandled_info: ~p",[?MODULE, Info]),
+    {ok, State}.
+
 
 terminate(_Reason, State) ->
     %% Do the final stats report
@@ -285,20 +291,19 @@ save_gauge(StatName) ->
             file:write(erlang:get({cdf_file, StatName}), Line)
     end.
 
-save_bench_file(StartTime, EndTime, [SyncTime, ReplFail, NodeKill], State) ->
+save_bench_file(StartTime, EndTime, [SyncTime, ReplFail, NodeKill], Dir, Stime) ->
     {NumKeys, KeySize} = basic_db:writes(),
     % lager:info("NK: ~p\tKeySize: ~p",[NumKeys, KeySize]),
     HashSize = byte_size( term_to_binary(erlang:phash2(term_to_binary([1,2]))) ),
     {ok, Nvnodes} = application:get_env(riak_core, ring_creation_size),
-    ST = round(timer:now_diff(StartTime, State#state.start_time) / 1000000),
-    ET = round(timer:now_diff(EndTime, State#state.start_time) / 1000000),
+    ST = round(timer:now_diff(StartTime, Stime) / 1000000),
+    ET = round(timer:now_diff(EndTime, Stime) / 1000000),
     Line0 = io_lib:format("Start Time \t\t\t:\t~w\nEnd Time \t\t\t:\t~w\nNumber of Keys \t\t\t:\t~w\nSync Interval \t\t\t:\t~w\nNode Kill Rate \t\t\t:\t~w\n",
                        [ST, ET, NumKeys, SyncTime, NodeKill]),
     Line1 = io_lib:format("Replication Failure Rate \t:\t~w\nNumber of Vnodes \t\t:\t~w\nReplication Factor \t\t:\t~w\n",
                        [ReplFail, Nvnodes, ?REPLICATION_FACTOR]),
     Line2 = io_lib:format("Hash Size \t\t\t:\t~w\nKey Size (bytes) \t\t:\t~w\nMerkle Tree Branch Factor \t:\t~w\n",
                         [HashSize, KeySize, ?MTREE_CHILDREN]),
-    Dir = erlang:get(bench_file),
     Fname = filename:join([Dir, "bench_file.csv"]),
     {ok, F} = file:open(Fname, [raw, binary, write]),
     ok = file:write(F, list_to_binary(Line0 ++ Line1 ++ Line2)).
