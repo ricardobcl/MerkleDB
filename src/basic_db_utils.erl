@@ -157,8 +157,7 @@ responsible_preflists_n(RevIndices, N) ->
 determine_all_n(Ring) ->
     Buckets = riak_core_ring:get_buckets(Ring),
     BucketProps = [riak_core_bucket:get_bucket(Bucket, Ring) || Bucket <- Buckets],
-    Default = app_helper:get_env(riak_core, default_bucket_props),
-    DefaultN = proplists:get_value(n_val, Default),
+    DefaultN = ?REPLICATION_FACTOR,
     AllN = lists:foldl(fun(Props, AllN) ->
                                N = proplists:get_value(n_val, Props),
                                ordsets:add_element(N, AllN)
