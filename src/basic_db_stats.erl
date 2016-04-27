@@ -293,11 +293,12 @@ save_gauge(StatName) ->
 
 save_bench_file(StartTime, EndTime, [SyncTime, ReplFail, NodeKill], Dir, Stime) ->
     basic_db_utils:maybe_seed(),
-    Sec = random:uniform(10)+5,
+    Sec = random:uniform(5)+2,
     lager:info("Ending bench going to sleep ~p seconds!", [Sec]),
     timer:sleep(timer:seconds(Sec)),
 
-    {NumKeys, KeySize} = basic_db:writes(),
+    % {NumKeys, KeySize} = basic_db:writes(),
+    {NumKeys, KeySize} = {-1,44},
     % lager:info("NK: ~p\tKeySize: ~p",[NumKeys, KeySize]),
     HashSize = byte_size( term_to_binary(erlang:phash2(term_to_binary([1,2]))) ),
     {ok, Nvnodes} = application:get_env(riak_core, ring_creation_size),
