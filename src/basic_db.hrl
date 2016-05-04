@@ -28,7 +28,7 @@
 -define(DEFAULT_REPLICATION_FAIL_RATIO, 0). % ratio of "lost" replicated put/deletes
 
 %% Options for vnodes
--define(REPORT_TICK_INTERVAL, 2500). % (ms) interval between report stats
+-define(REPORT_TICK_INTERVAL, 5000). % (ms) interval between report stats
 
 -define(STATS_FLUSH_INTERVAL, 5). % (sec) interval between flushing data to disk
 -define(DEFAULT_DO_STATS, true). % bool that says if a vnode should collect and report stats
