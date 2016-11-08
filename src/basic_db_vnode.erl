@@ -692,13 +692,13 @@ schedule_report(Interval) ->
 report_stats(State) ->
     ok = save_vnode_state(State#state.dets, State#state.id),
     % Optionally collect stats
-    case State#state.stats andalso State#state.hashtrees =/= undefined of
+    case ?STAT_MT_SIZE andalso State#state.stats andalso State#state.hashtrees =/= undefined of
         true ->
             DelKeys = ets_get_deleted(State#state.atom_id),
-            basic_db_stats:notify({histogram, deleted_keys}, length(DelKeys)),
+            DK = {histogram, deleted_keys, length(DelKeys)},
 
             WKeys = ets_get_written(State#state.atom_id),
-            basic_db_stats:notify({histogram, written_keys}, length(WKeys)),
+            WK = {histogram, written_keys, length(WKeys)},
 
             MtMetadata = 11,
             HashSize = byte_size( term_to_binary(erlang:phash2(term_to_binary([1,2]))) ),
@@ -710,8 +710,9 @@ report_stats(State) ->
             MT2 = math:pow(?MTREE_CHILDREN,2),
             MTSize = (BlockSize + MT*BlockSize + MT2*BlockSize + NumKeys*BlockSize) * RF,
             % BasicSize = (BlockSize + MT*BlockSize + (MT**2)*BlockSize + (RF*NumKeys/(Nvnodes*1.0))*BlockSize) * RF,
-            basic_db_stats:notify({histogram, mt_size}, MTSize),
+            MTS = {histogram, mt_size, MTSize},
 
+            basic_db_stats:notify2([DK, WK, MTS]),
             ok;
         false -> ok
     end,
@@ -737,7 +738,7 @@ save_kv(Key={_,_}, Object, S=#state{atom_id=ID}, Now, ETS) ->
     %     true -> lager:warning("L: ~p \tC: ~p",[length(basic_db_object:get_context(Object)), basic_db_object:get_context(Object)]);
     %     false -> lager:warning("L: ~p",[length(basic_db_object:get_context(Object))])
     % end,
-    ETS andalso basic_db_stats:notify({histogram, entries_per_clock}, length(basic_db_object:get_context(Object))),
+    ?STAT_ENTRIES andalso basic_db_stats:notify({histogram, entries_per_clock}, length(basic_db_object:get_context(Object))),
     basic_db_storage:put(S#state.storage, Key, Object).
 
 -spec get_ets_id(any()) -> atom().
@@ -817,8 +818,12 @@ notify_write_latency(_FSMTime, undefined) ->
     % lager:warning("Undefined write time!!!!!!!!"),
     ok;
 notify_write_latency(FSMTime, WriteTime) ->
-    Delta = timer:now_diff(WriteTime, FSMTime)/1000,
-    basic_db_stats:notify({gauge, write_latency}, Delta).
+    case ?STAT_WRITE_LATENCY of
+        false -> ok;
+        true ->
+            Delta = timer:now_diff(WriteTime, FSMTime)/1000,
+            basic_db_stats:notify({gauge, write_latency}, Delta)
+    end.
 
 ensure_tuple(Id, Key) ->
     U = undefined,

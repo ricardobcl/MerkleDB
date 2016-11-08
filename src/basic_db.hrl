@@ -30,8 +30,15 @@
 %% Options for vnodes
 -define(REPORT_TICK_INTERVAL, 5000). % (ms) interval between report stats
 
+%% STATS
 -define(STATS_FLUSH_INTERVAL, 5). % (sec) interval between flushing data to disk
 -define(DEFAULT_DO_STATS, true). % bool that says if a vnode should collect and report stats
+
+-define(STAT_ENTRIES, false).
+-define(STAT_MT_SIZE, true).
+-define(STAT_SYNC, true).
+-define(STAT_WRITE_LATENCY, false).
+
 
 -define(ETS_CACHE_REPLICA_NODES, ets_cache_replica_nodes).
 -define(OPT_TIMEOUT, opt_timeout).

@@ -195,21 +195,26 @@ read_repair(BKey, Replies, AAE_Repair, #state{key=Key}) ->
                         [Index, length(OutdatedNodes), {PayloadSize,MetaSize}]) ||
                             {{Index, Node},_} <- Replies],
 
-            ObjectSize = byte_size(term_to_binary([{Key, basic_db_object:get_values(Obj)} || {_,Obj} <- Replies])),
-            ContextSize = byte_size(term_to_binary([basic_db_object:get_context(Obj) || {_,Obj} <- Replies])),
-            basic_db_stats:notify({histogram, sync_sent_missing}, 1),
-            basic_db_stats:notify({histogram, sync_payload_size}, ObjectSize),
-            basic_db_stats:notify({histogram, sync_context_size}, ContextSize),
-            case length(OutdatedNodes) of
-                2 ->
-                    basic_db_stats:notify({histogram, sync_hit_ratio}, 100),
-                    basic_db_stats:notify({histogram, sync_sent_truly_missing}, 1);
-                1 ->
-                    basic_db_stats:notify({histogram, sync_hit_ratio}, 100),
-                    basic_db_stats:notify({histogram, sync_sent_truly_missing}, 1);
-                0 ->
-                    basic_db_stats:notify({histogram, sync_hit_ratio}, 0),
-                    basic_db_stats:notify({histogram, sync_sent_truly_missing}, 0)
+            case ?STAT_SYNC of
+                false -> ok;
+                true ->
+                    ObjectSize = byte_size(term_to_binary([{Key, basic_db_object:get_values(Obj)} || {_,Obj} <- Replies])),
+                    ContextSize = byte_size(term_to_binary([basic_db_object:get_context(Obj) || {_,Obj} <- Replies])),
+                    SS = [{histogram, sync_sent_missing, 1},
+                        {histogram, sync_payload_size, ObjectSize},
+                        {histogram, sync_context_size, ContextSize}],
+                    SS2 = case length(OutdatedNodes) of
+                        2 ->
+                            [{histogram, sync_hit_ratio, 100},
+                            {histogram, sync_sent_truly_missing, 1}];
+                        1 ->
+                            [{histogram, sync_hit_ratio, 100},
+                            {histogram, sync_sent_truly_missing, 1}];
+                        0 ->
+                            [{histogram, sync_hit_ratio, 0},
+                            {histogram, sync_sent_truly_missing, 0}]
+                    end,
+                    basic_db_stats:notify2(SS ++ SS2)
             end,
             ok;
         true ->

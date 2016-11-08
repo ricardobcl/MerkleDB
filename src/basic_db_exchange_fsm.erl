@@ -192,7 +192,7 @@ key_exchange(timeout, State=#state{local=LocalVN,
                          Result ->
                              Size = byte_size(term_to_binary(Result)),
                              Size2 = basic_db_utils:human_filesize(Size),
-                             basic_db_stats:notify({histogram, sync_metadata_size}, Size),
+                             ?STAT_SYNC andalso basic_db_stats:notify({histogram, sync_metadata_size}, Size),
                              % lager:info("Bucket: ~p   Level: ~p   E.bytes: ~p~n", [Bucket, Level, Result]),
                              lager:debug("Bucket: ~p   Level: ~p   E.bytes: ~s~n", [Bucket, Level, Size2]),
                              {LocalIdx, _LocalNode} = LocalVN,
@@ -209,8 +209,8 @@ key_exchange(timeout, State=#state{local=LocalVN,
                              Size = byte_size(term_to_binary(Result)),
                              Size2 = basic_db_utils:human_filesize(Size),
                              NumberKVs = length(Result),
-                             basic_db_stats:notify({histogram, sync_metadata_size}, Size),
-                             basic_db_stats:notify({histogram, sync_segment_keys_missing}, NumberKVs),
+                             ?STAT_SYNC andalso basic_db_stats:notify({histogram, sync_metadata_size}, Size),
+                             ?STAT_SYNC andalso basic_db_stats:notify({histogram, sync_segment_keys_missing}, NumberKVs),
                              BytesPerKVHash = Size/max(1,NumberKVs),
                              NumberKVs > 0 andalso
                                 lager:debug("Seg: ~p\t#Keys: ~p\tE.bytes: ~s\tBytesPerKVHash: ~.1f B~n", [Segment, NumberKVs, Size2, BytesPerKVHash]),
@@ -263,7 +263,7 @@ key_exchange(timeout, State=#state{local=LocalVN,
              end,
     %% TODO: Add stats for AAE
     Count = basic_db_index_hashtree:compare(IndexN, Remote, AccFun, 0, LocalTree),
-    basic_db_stats:notify({histogram, sync_segment_keys_truly_missing}, Count),
+    ?STAT_SYNC andalso basic_db_stats:notify({histogram, sync_segment_keys_truly_missing}, Count),
     if Count == 0 ->
             Complete = true,
             ok;
